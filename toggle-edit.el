@@ -1,8 +1,24 @@
-;;; toggle-edit-mode.el --- Toggle read-only in buffers -*- lexical-binding: t -*-
+;;; toggle-edit.el --- Toggle read-only in buffers -*- lexical-binding: t -*-
 
 ;; Author: IceAsteroid
 ;; Keywords: convenience, files
+;; Homepage: https://github.com/IceAsteroid/toggle-edit
 ;; Version: 0.2
+
+;; This file is NOT part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 ;; This minor mode manages read-only status intelligently across buffers,
@@ -176,7 +192,7 @@ it runs `edition-no-save-buffer-hook' instead of saving."
   "Global minor mode to toggle editing and read-only status easily."
   :global t
   :group 'edition
-  :lighter " Edit"
+  :lighter " TEdit"
   :keymap edition-mode-map
 
   (if edition-mode
@@ -220,5 +236,9 @@ it runs `edition-no-save-buffer-hook' instead of saving."
         ;; Also cleanup locally if possible, though strict cleanup for global hooks is tricky
         ))))
 
-(provide 'toggle-edit-mode)
-;;; toggle-edit-mode.el ends here
+(provide 'toggle-edit)
+;;; toggle-edit.el ends here
+
+;; Local Variables:
+;; read-symbol-shorthands: (("tedit-" . "toggle-edit-"))
+;; End;

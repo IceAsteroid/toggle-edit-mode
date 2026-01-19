@@ -1,4 +1,4 @@
-# toggle-edit-mode
+# toggle-edit
 A read-only first workflow for buffer editing to prevent mistyping.
 
 ## Motivation
@@ -13,4 +13,3 @@ This mode enables read-only-mode when visiting a file, and a command can be boun
 Also, when read-only-mode is on or off, cursor color will be changed,
   - when on, the color can be set to your preference with a custom variable.
   - when off, the color preserved from the theme cursor face will be set for the cursor.
-
