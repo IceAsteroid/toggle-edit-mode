@@ -40,8 +40,8 @@
   (declare-function corfu-quit "corfu"))
 
 ;;; Customization Group
-(defgroup edition nil
-  "Toggle edition/read-only mode configurations."
+(defgroup toggle-edit nil
+  "Toggle read-only mode configurations."
   :group 'convenience)
 
 ;;; User Options (defcustom)
@@ -49,30 +49,31 @@
 (defcustom tedit-enable-derived-mode-list '(prog-mode text-mode conf-mode)
   "List of derived modes where `toggle-edit-mode' should enforce read-only status."
   :type '(repeat symbol)
-  :group 'edition)
+  :group 'toggle-edit)
 
 (defcustom tedit-enable-major-mode-list '()
   "List of specific major modes where `toggle-edit-mode' should enforce read-only
 status."
   :type '(repeat symbol)
-  :group 'edition)
+  :group 'toggle-edit)
 
 (defcustom tedit-ignored-buffer-regexps '()
   "List of regexps for buffers where saving should NOT be triggered.
 Buffers like `*scratch*' are handled automatically."
   :type '(repeat regexp)
-  :group 'edition)
+  :group 'toggle-edit)
 
 (defcustom tedit-find-file-enable t
   "If non-nil, automatically check read-only status when visiting new files."
   :type 'boolean
-  :group 'edition)
+  :group 'toggle-edit)
 
 (defcustom tedit-toggle-key "C-`"
-  "Key sequence to toggle edition mode (save and toggle read-only).
+  "Key sequence to toggle toggle-edit mode (save and toggle read-only).
 Note: This requires restarting the mode to take effect if changed."
   :type 'string
-  :group 'edition)
+  :group 'toggle-edit)
+
 
 ;;; Internal Variables
 
@@ -216,7 +217,7 @@ it runs `tedit-no-save-buffer-hook' instead of saving."
 (define-minor-mode tedit-mode
   "Global minor mode to toggle editing and read-only status easily."
   :global t
-  :group 'edition
+  :group 'toggle-edit
   :lighter " TEdit"
   :keymap tedit-mode-map
   (if tedit-mode
