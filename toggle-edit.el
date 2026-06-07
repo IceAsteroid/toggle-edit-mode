@@ -74,6 +74,10 @@ Note: This requires restarting the mode to take effect if changed."
   :type 'string
   :group 'toggle-edit)
 
+(defcustom tedit-read-only-cursor-color "red2"
+  "The default cursor color when buffer is read-only."
+  :type 'string
+  :group 'toggle-edit)
 
 ;;; Internal Variables
 
@@ -156,7 +160,7 @@ Runs via idle timer to avoid performance hits during rapid input."
       (if (not tedit--theme-cursor-color)
           (tedit--cache-cursor-color)
         (set-cursor-color
-         (if buffer-read-only "red2" tedit--theme-cursor-color)))
+         (if buffer-read-only tedit-read-only-cursor-color tedit--theme-cursor-color)))
       (setq tedit--cursor-needs-update-p nil))))
 
 ;;; Interactive Commands
