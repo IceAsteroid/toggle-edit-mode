@@ -53,7 +53,7 @@ status."
   :type '(repeat symbol)
   :group 'toggle-edit)
 
-(defcustom tedit-ignored-buffer-regexps '()
+(defcustom tedit-no-save-buffer-regexps '()
   "List of regexps for buffers where saving should NOT be triggered.
 Buffers like `*scratch*' are handled automatically."
   :type '(repeat regexp)
