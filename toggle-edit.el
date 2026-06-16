@@ -79,6 +79,11 @@ Note: This requires restarting the mode to take effect if changed."
   :type 'string
   :group 'toggle-edit)
 
+(defcustom tedit-cursor-update-delay 0.1
+  "The delay to update cursor after idle."
+  :type 'number
+  :group 'toggle-edit)
+
 ;;; Internal Variables
 
 (defvar tedit--pending-readonly-check nil
@@ -238,7 +243,7 @@ it runs `tedit-no-save-buffer-hook' instead of saving."
         (advice-add 'enable-theme :after #'tedit--cache-cursor-color)
         ;; Timer
         (setq tedit--cursor-update-timer
-              (run-with-idle-timer 0.1 t #'tedit--update-cursor-color))
+              (run-with-idle-timer tedit-cursor-update-delay t #'tedit--update-cursor-color))
         ;; Company Integration
         (with-eval-after-load 'company
           (add-hook 'company-mode-hook #'tedit--setup-company-hook))
