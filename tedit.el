@@ -1,4 +1,4 @@
-;;; toggle-edit-3.el --- Toggle read-only mode in buffers   -*- lexical-binding: t -*-
+;;; tedit.el --- Toggle read-only mode in buffers   -*- lexical-binding: t -*-
 
 ;; Author: IceAsteroid
 ;; Keywords: convenience, files
@@ -6,6 +6,19 @@
 ;; Version: 0.3
 
 ;; This file is NOT part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 ;; This global minor mode manages read-only status intelligently across buffers.
@@ -21,34 +34,35 @@
   (declare-function corfu-quit "corfu"))
 
 ;;; Customization Group
-(defgroup toggle-edit nil
+
+(defgroup tedit nil
   "Toggle read-only mode configurations."
   :group 'convenience)
 
 ;;; Inclusion Rules (Whitelists)
 
 (defcustom tedit-enable-derived-mode-list '(prog-mode text-mode conf-mode)
-  "List of derived modes where `toggle-edit-mode' should enforce read-only status."
+  "List of derived modes where `tedit-mode' should enforce read-only status."
   :type '(repeat symbol)
-  :group 'toggle-edit)
+  :group 'tedit)
 
 (defcustom tedit-enable-major-mode-list '()
-  "List of specific major modes where `toggle-edit-mode' should enforce read-only status."
+  "List of specific major modes where `tedit-mode' should enforce read-only status."
   :type '(repeat symbol)
-  :group 'toggle-edit)
+  :group 'tedit)
 
 ;;; Exclusion Rules (Blacklists)
 
 (defcustom tedit-ignore-modes '(magit-status-mode magit-log-mode dired-mode)
   "Modes that should NEVER be toggled read-only, overriding the enable lists."
   :type '(repeat symbol)
-  :group 'toggle-edit)
+  :group 'tedit)
 
 (defcustom tedit-ignore-buffer-name-regexps '("^\\*" "^ ")
   "Regexps for buffer names that should NEVER be toggled read-only.
 By default, this ignores all hidden/internal buffers starting with `*`."
   :type '(repeat regexp)
-  :group 'toggle-edit)
+  :group 'tedit)
 
 ;;; Behavior Settings
 
@@ -56,22 +70,27 @@ By default, this ignores all hidden/internal buffers starting with `*`."
   "If non-nil, reset buffers to read-only EVERY time you switch to their window.
 If nil, read-only is only applied the FIRST time the buffer is viewed."
   :type 'boolean
-  :group 'toggle-edit)
+  :group 'tedit)
 
 (defcustom tedit-no-save-buffer-regexps '()
   "List of regexps for buffers where saving should NOT be triggered."
   :type '(repeat regexp)
-  :group 'toggle-edit)
+  :group 'tedit)
 
 (defcustom tedit-toggle-key "C-`"
-  "Key sequence to toggle toggle-edit mode (save and toggle read-only)."
+  "Key sequence to toggle `tedit-mode' (save and toggle read-only)."
   :type 'string
-  :group 'toggle-edit)
+  :group 'tedit)
 
 (defcustom tedit-read-only-cursor-color "red2"
   "The default cursor color when buffer is read-only."
   :type 'string
-  :group 'toggle-edit)
+  :group 'tedit)
+
+(defcustom tedit-cursor-timer-delay 0.1
+  "Seconds of idle time before checks and updates of cursor color for `tedit-mode'."
+  :type 'number
+  :group 'tedit)
 
 ;;; Internal Variables
 
@@ -85,10 +104,16 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
   "Hook run when `tedit-save-buffer-toggle' is called on an ignored buffer.")
 
 (defvar tedit-mode-map (make-sparse-keymap)
-  "Keymap for `toggle-edit-mode'.")
+  "Keymap for `tedit-mode'.")
 
 (defvar-local tedit--initialized-p nil
-  "Tracks if the buffer has already been evaluated by toggle-edit.")
+  "Tracks if the buffer has already been evaluated by tedit.")
+
+(defvar tedit--last-focused-buffer nil
+  "Tracks the last non-minibuffer buffer to prevent relocking on minibuffer exits.")
+
+(defvar tedit--cursor-timer nil
+  "The idle timer object responsible for cursor visual sync.")
 
 ;;; Core Logic
 
@@ -107,21 +132,23 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
 (defun tedit--focus-handler (&rest _)
   "Evaluate read-only state exactly when a window or buffer receives user focus."
   (when tedit-mode
-    (with-current-buffer (window-buffer (selected-window))
-      ;; Only execute if it's the first time viewing, OR if the user wants strict resetting
-      (when (or (not tedit--initialized-p) tedit-always-lock-on-switch)
-        (setq-local tedit--initialized-p t)
-        (when (and (not buffer-read-only) (tedit--should-enable-readonly-p))
-          (read-only-mode 1)
-          (add-hook 'read-only-mode-hook #'tedit--update-cursor-color nil t)
-          (add-hook 'read-only-mode-hook #'tedit--company-abort-if-readonly nil t)
-          (add-hook 'read-only-mode-hook #'tedit--corfu-quit-if-readonly nil t)))
-      ;; Sync the cursor color purely based on the current focused state
-      (tedit--update-cursor-color))))
+    (let ((buf (window-buffer (selected-window))))
+      (unless (minibufferp buf)
+        (with-current-buffer buf
+          ;; Check if we genuinely switched to a different buffer
+          (let ((switched-buffer-p (not (eq buf tedit--last-focused-buffer))))
+            ;; Execute if first time viewing OR (strict reset AND we actually switched buffers)
+            (when (or (not tedit--initialized-p)
+                      (and tedit-always-lock-on-switch switched-buffer-p))
+              (setq-local tedit--initialized-p t)
+              (when (and (not buffer-read-only) (tedit--should-enable-readonly-p))
+                (read-only-mode 1)
+                (add-hook 'read-only-mode-hook #'tedit--company-abort-if-readonly nil t)
+                (add-hook 'read-only-mode-hook #'tedit--corfu-quit-if-readonly nil t))))
+          (setq tedit--last-focused-buffer buf))))))
 
 (defun tedit--cleanup-buffer ()
-  "Clean up toggle-edit modifications from the current buffer."
-  (remove-hook 'read-only-mode-hook #'tedit--update-cursor-color t)
+  "Clean up `tedit-mode' modifications from the current buffer."
   (remove-hook 'read-only-mode-hook #'tedit--company-abort-if-readonly t)
   (remove-hook 'read-only-mode-hook #'tedit--corfu-quit-if-readonly t)
   (setq-local tedit--initialized-p nil))
@@ -142,6 +169,16 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
          tedit-read-only-cursor-color
        (or tedit--theme-cursor-color "black")))))
 
+(defun tedit--manage-timer ()
+  "Start or stop the cursor sync idle timer based on mode state."
+  (if tedit-mode
+      (unless tedit--cursor-timer
+        (setq tedit--cursor-timer
+              (run-with-idle-timer tedit-cursor-timer-delay t #'tedit--update-cursor-color)))
+    (when tedit--cursor-timer
+      (cancel-timer tedit--cursor-timer)
+      (setq tedit--cursor-timer nil))))
+
 ;;; Interactive Commands
 
 (defun tedit-save-buffer-toggle ()
@@ -154,12 +191,12 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
         (basic-save-buffer)
       (let ((current-tick (buffer-chars-modified-tick)))
         (unless (eq tedit--saved-tick current-tick)
-          (with-demoted-errors "Error in toggle-edit-no-save-buffer-hook: %s"
+          (with-demoted-errors "Error in tedit-no-save-buffer-hook: %s"
             (run-hooks 'tedit-no-save-buffer-hook))
           (setq-local tedit--saved-tick current-tick)))))
   ;; Toggle the mode
   (read-only-mode 'toggle)
-  ;; FORCE cursor update for manual toggles, bypassing any blacklists
+  ;; FORCE cursor update for manual toggles immediately (don't wait for timer)
   (tedit--update-cursor-color))
 
 ;;; Package Integration
@@ -184,13 +221,14 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
 (define-minor-mode tedit-mode
   "Global minor mode to toggle editing and read-only status easily."
   :global t
-  :group 'toggle-edit
+  :group 'tedit
   :lighter " TEdit"
   :keymap tedit-mode-map
   (if tedit-mode
       (progn
         (tedit--update-keymap)
         (tedit--cache-cursor-color)
+        (tedit--manage-timer)
         ;; Bind strictly to human window/buffer focus changes
         (add-hook 'window-selection-change-functions #'tedit--focus-handler)
         (add-hook 'window-buffer-change-functions #'tedit--focus-handler)
@@ -198,6 +236,9 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
         ;; Initialize currently focused window immediately
         (tedit--focus-handler))
     ;; DISABLE
+    (tedit--manage-timer)
+    ;; set back to theme's cursor color when the mode is disabled.
+    (set-cursor-color (or tedit--theme-cursor-color "black"))
     (remove-hook 'window-selection-change-functions #'tedit--focus-handler)
     (remove-hook 'window-buffer-change-functions #'tedit--focus-handler)
     (advice-remove 'enable-theme #'tedit--cache-cursor-color)
@@ -205,6 +246,6 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
       (with-current-buffer buf
         (tedit--cleanup-buffer)))))
 
-(provide 'toggle-edit-3)
+(provide 'tedit)
 
-;;; toggle-edit-3.el ends here
+;;; tedit.el ends here
