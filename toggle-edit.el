@@ -26,16 +26,12 @@
 
 ;;; TODO
 ;; 1. Standardize keybindings.
-;; 2. Improve code quality to improve performance for company integration; or maybe not, as for compatibility reasons.
-;; 3. Add corfu integration.
-;; 4. Fix The Performance Trap: Cursor Polling
-;; 5. Solve the "Tricky" Hook Cleanup
 
 (require 'seq)
 
 (eval-when-compile
-  (defvar-local company-mode nil)
-  (defvar-local corfu-mode nil)
+  (defvar company-mode nil)
+  (defvar corfu-mode nil)
   (declare-function company-abort "company")
   (declare-function corfu-quit "corfu"))
 
@@ -86,9 +82,8 @@ Note: This requires restarting the mode to take effect if changed."
 
 ;;; Internal Variables
 
-(defvar tedit--pending-readonly-check nil
+(defvar-local tedit--pending-readonly-check nil
   "Buffer-local flag indicating this buffer needs a read-only check when visible.")
-(make-variable-buffer-local 'tedit--pending-readonly-check)
 
 (defvar tedit--theme-cursor-color nil
   "Cache for the current theme's cursor color.")
@@ -172,24 +167,21 @@ Runs via idle timer to avoid performance hits during rapid input."
 
 (defun tedit-save-buffer-toggle ()
   "Toggle `read-only-mode' and save the buffer if appropriate.
-If the buffer is ignored (see `tedit-ignored-buffer-regexps'),
+If the buffer is ignored (see `tedit-no-save-buffer-regexps'),
 it runs `tedit-no-save-buffer-hook' instead of saving."
   (interactive)
   (unless buffer-read-only
     (if (and (buffer-file-name)
-             (not (and tedit-ignored-buffer-regexps
-                       (string-match-p (mapconcat #'identity tedit-ignored-buffer-regexps "\\|")
-                                       (buffer-name)))))
+             (not (seq-some (lambda (re) (string-match-p re (buffer-name)))
+                            tedit-no-save-buffer-regexps)))
         ;; Normal file: save it
         (basic-save-buffer)
-
       ;; Special buffer: run hooks safely
       (let ((current-tick (buffer-chars-modified-tick)))
         (unless (eq tedit--saved-tick current-tick)
           (with-demoted-errors "Error in toggle-edit-no-save-buffer-hook: %s"
             (run-hooks 'tedit-no-save-buffer-hook))
           (setq-local tedit--saved-tick current-tick)))))
-
   (read-only-mode 'toggle))
 
 ;;; Company Integration
