@@ -25,6 +25,12 @@
 ;; State changes strictly evaluate "on-focus" to protect background buffers and 
 ;; async processes from being prematurely locked.
 
+;;; TODO
+;; 1. Add two list variables, for buffers and modes when
+;; `tedit-always-lock-on-switch' is t that should not turn on
+;; read-only for after the selected window is back focused from.
+;; 1.1. For example, minibuffer, "*Org Select*" buffer.
+
 (require 'seq)
 
 (eval-when-compile
