@@ -159,8 +159,8 @@ For the selected window is refocused from.  As if
   "Return t if the buffer should be read-only based on ignore and enable lists."
   (let ((ignore-regex (regexp-opt tedit-ignore-buffer-name-regexps)))
     (and (not (string-match-p ignore-regex (buffer-name)))
-         (not (seq-some #'derived-mode-p tedit-ignore-modes))
-         (or (seq-some #'derived-mode-p tedit-enable-derived-mode-list)
+         (not (derived-mode-p tedit-ignore-modes))
+         (or (derived-mode-p tedit-enable-derived-mode-list)
              (memq major-mode tedit-enable-major-mode-list)))))
 
 (defun tedit--focus-handler (&rest _)
