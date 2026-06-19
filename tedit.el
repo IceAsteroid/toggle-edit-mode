@@ -25,13 +25,9 @@
 ;; State changes strictly evaluate "on-focus" to protect background buffers and 
 ;; async processes from being prematurely locked.
 
-;;; TODO
-;; 1. Add two list variables, for buffers and modes when
-;; `tedit-always-lock-on-switch' is t that should not turn on
-;; read-only for after the selected window is back focused from.
-;; 1.1. For example, minibuffer, "*Org Select*" buffer.
-
 (require 'seq)
+
+;;; Code:
 
 (eval-when-compile
   (defvar company-mode nil)
@@ -76,6 +72,38 @@ By default, this ignores all hidden/internal buffers starting with `*`."
   "If non-nil, reset buffers to read-only EVERY time you switch to their window.
 If nil, read-only is only applied the FIRST time the buffer is viewed."
   :type 'boolean
+  :group 'tedit)
+
+(defcustom tedit-no-lock-from-deep-minibuffer t
+  "If non-nil, not lock read-only from executing a command to open a temp buffer.
+For the selected window is refocused from.  As if
+`tedit-always-lock-on-switch' is non-nil.
+
+This is useful for not using a completion system like `vertico-mode',
+where you select the \"*completion*\" window and back to the selected
+window."
+  :type 'boolean
+  :group 'tedit)
+
+(defcustom tedit-no-lock-from-dedicated-window nil
+  "If non-nil, not lock read-only from dedicated windows.
+For the selected window is refocused from.  As if
+`tedit-always-lock-on-switch' is non-nil."
+  :type 'boolean
+  :group 'tedit)
+
+(defcustom tedit-no-lock-from-modes '()
+  "List of modes to not lock read-only from.
+For the selected window is refocused from.  As if
+`tedit-always-lock-on-switch' is non-nil."
+  :type '(repeat symbol)
+  :group 'tedit)
+
+(defcustom tedit-no-lock-from-buffers '()
+  "List of buffer name regexps to not lock read-only from.
+For the selected window is refocused from.  As if
+`tedit-always-lock-on-switch' is non-nil."
+  :type '(repeat string)
   :group 'tedit)
 
 (defcustom tedit-no-save-buffer-regexps '()
@@ -139,7 +167,13 @@ If nil, read-only is only applied the FIRST time the buffer is viewed."
   "Evaluate read-only state exactly when a window or buffer receives user focus."
   (when tedit-mode
     (let ((buf (window-buffer (selected-window))))
-      (unless (minibufferp buf)
+      (unless (or (minibufferp buf)
+                  ;; exclude minibuffers such as `*Completions*' for the built-in completion system, e.g.
+                  (and tedit-no-lock-from-deep-minibuffer (> (minibuffer-depth) 0))
+                  (and tedit-no-lock-from-dedicated-window (window-dedicated-p (selected-window)))
+                  (string-match-p (regexp-opt tedit-no-lock-from-buffers) (buffer-name buf))
+                  (with-current-buffer buf
+                    (derived-mode-p tedit-no-lock-from-modes)))
         (with-current-buffer buf
           ;; Check if we genuinely switched to a different buffer
           (let ((switched-buffer-p (not (eq buf tedit--last-focused-buffer))))
