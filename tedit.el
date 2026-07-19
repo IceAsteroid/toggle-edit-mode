@@ -104,6 +104,9 @@
 ;; 9.1 Done.  Added `tedit-soft-lock-existing-hard-lock-method' and
 ;; its feature to achieve this.
 
+;; 10. Bug: Cursor color update and blinking aborted when C-g cancels the
+;; minibuffer and returns to the selected window.
+
 (require 'seq)
 
 ;;; Code:
