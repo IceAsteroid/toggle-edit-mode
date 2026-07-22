@@ -3,7 +3,7 @@
 ;; Author: IceAsteroid
 ;; Keywords: convenience, files
 ;; Homepage: https://github.com/IceAsteroid/toggle-edit
-;; Version: 0.3
+;; Version: 0.5
 
 ;; This file is NOT part of GNU Emacs.
 
