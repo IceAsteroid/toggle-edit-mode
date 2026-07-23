@@ -605,21 +605,31 @@ and tedit's pure declarative engine."
          (buf (window-buffer win))
          (switched-p (not (eq tedit--last-focused-buffer buf)))
          (last-buf tedit--last-focused-buffer)
-         (last-win (and last-buf (get-buffer-window last-buf))))
+         ;; FIX: get-buffer-window is safer if we ensure the buffer is alive first
+         (last-win (and last-buf (buffer-live-p last-buf) (get-buffer-window last-buf))))
 
     ;; GUARD CLAUSES: Do nothing if refactoring, in a recursive minibuffer,
     ;; returning from a side-panel tree view, or mid-mode transition.
-    ;; CRITICAL FIX: Check the OUTGOING buffer (last-buf/last-win) for relock-inhibit
-    ;; rules, so returning from treemacs back to code doesn't falsely bypass logic.
+    ;;
+    ;; CRITICAL FIX & QUIRK (Pointer Paralysis): Check the OUTGOING buffer (last-buf/last-win)
+    ;; for relock-inhibit rules, so returning from treemacs back to code doesn't falsely bypass logic.
+    ;; If the incoming buffer matches an inhibit rule, this block aborts BEFORE
+    ;; `tedit--last-focused-buffer` updates. This creates "Transient Invisibility",
+    ;; perfectly preserving your manual lock states when you close the side-panel.
     (unless (or (bound-and-true-p delay-mode-hooks)
                 (memq this-command tedit-inhibit-commands)
                 (minibufferp buf)
                 (and tedit-relock-inhibit-from-deep-minibuffer (> (minibuffer-depth) 0))
                 (and last-win tedit-relock-inhibit-from-dedicated-window (window-dedicated-p last-win))
-                (and last-buf (with-current-buffer last-buf
-                                (tedit--match-rules-p tedit-relock-inhibit-from-buffer-regexps 
-                                                      nil 
-                                                      tedit-relock-inhibit-from-mode-list))))
+
+                ;; FIX: Ensure the outgoing buffer hasn't been killed by the user
+                ;; before attempting to check its regex rules.
+                (and last-buf
+                     (buffer-live-p last-buf)
+                     (with-current-buffer last-buf
+                       (tedit--match-rules-p tedit-relock-inhibit-from-buffer-regexps
+                                             nil
+                                             tedit-relock-inhibit-from-mode-list))))
 
       ;; Feature: always-lock-on-switch OR deferred mode evaluation
       ;; QUIRK: We gate this behind `switched-p` so we ignore minor background redisplays.
@@ -636,8 +646,9 @@ and tedit's pure declarative engine."
           (setq tedit--needs-re-evaluation nil)))
 
       ;; Reconcile Outgoing Buffer (Triggers blur-unlocks for the buffer we just left)
-      (when (and tedit--last-focused-buffer switched-p)
-        (tedit--reconcile tedit--last-focused-buffer))
+      ;; FIX: Do not attempt to blur-unlock a buffer that was just killed.
+      (when (and last-buf switched-p (buffer-live-p last-buf))
+        (tedit--reconcile last-buf))
 
       ;; Reconcile Incoming Buffer (Restores locks for the buffer we just entered)
       (tedit--reconcile buf)
