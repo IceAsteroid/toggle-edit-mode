@@ -227,7 +227,23 @@
           (tedit--focus-handler)
 
           ;; Proof: Prevents the engine from stealing focus during M-: evaluations
-          (expect 'tedit--reconcile :not :to-have-been-called)))))
+          (expect 'tedit--reconcile :not :to-have-been-called))))
+
+    ;; NEW: Proving the Dead Buffer Guard
+    (it "handles deleted outgoing buffers safely without throwing an error"
+      (with-temp-buffer
+        ;; 1. Setup a dummy buffer, assign it to last-buf, and immediately kill it
+        (let ((killed-buf (generate-new-buffer "to-be-killed")))
+          (setq tedit--last-focused-buffer killed-buf)
+          (kill-buffer killed-buf)
+
+          ;; 2. Mock the focus shift to our temp buffer
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; 3. Proof: If the dead buffer guard fails, this throws "Selecting deleted buffer".
+          ;; If it succeeds, the focus handler executes cleanly without throwing.
+          (expect (tedit--focus-handler) :not :to-throw)))))
 
 
   (describe "tedit-save-buffer-toggle (The Master Command)"
