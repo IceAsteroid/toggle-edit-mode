@@ -868,6 +868,31 @@ cases that some elisp code needs to write to these buffers."
     (setq tedit--intended-state nil)
     (tedit--reconcile (current-buffer))))
 
+(defun tedit--after-save-hook ()
+  "Conditionally recalculate OS-level locks if write permission changes when saved or renamed.
+
+This catches the file write permission changes when a file is saved or renamed
+by a command such as \\[write-file](`write-file'), for example, a root file is
+renamed to save in a home directory, and now is writable.
+
+If the physical disk permissions contradict the engine's permanent anchor
+(`tedit--native-read-only-p'), tedit wipes the current intent and forces
+a strict re-evaluation of the new real state.
+
+This is deliberately decoupled from `tedit--after-revert-hook` because
+saving preserves buffer state, whereas reverting destroys it."
+  (when (and tedit-mode buffer-file-name (local-variable-p 'tedit--native-read-only-p))
+    ;; 1. Check the new physical reality of the file on disk
+    (let ((is-natively-readonly (not (file-writable-p buffer-file-name))))
+      ;; 2. Only act if the OS permission contradicts our permanent anchor
+      (unless (eq tedit--native-read-only-p is-natively-readonly)
+        ;; 3. Update the anchor to match physical reality
+        (setq tedit--native-read-only-p is-natively-readonly)
+        ;; 4. A change in OS permission invalidates the current intent.
+        ;; Wipe it and force the Brain to calculate the new reality.
+        (setq tedit--intended-state nil)
+        (tedit--reconcile (current-buffer))))))
+
 ;;;###autoload
 (define-minor-mode tedit-mode
   "Global minor mode to toggle editing and read-only status easily."
@@ -885,6 +910,7 @@ cases that some elisp code needs to write to these buffers."
         (add-hook 'change-major-mode-hook #'tedit--before-major-mode-change)
         (add-hook 'after-change-major-mode-hook #'tedit--after-major-mode-change)
         (add-hook 'after-revert-hook #'tedit--after-revert-hook)
+        (add-hook 'after-save-hook #'tedit--after-save-hook)
         (advice-add 'fundamental-mode :after #'tedit--after-fundamental-mode-advice)
         (advice-add 'enable-theme :after #'tedit--cache-cursor-color)
         (advice-add 'disable-theme :after #'tedit--cache-cursor-color)
@@ -909,6 +935,7 @@ cases that some elisp code needs to write to these buffers."
     (remove-hook 'change-major-mode-hook #'tedit--before-major-mode-change)
     (remove-hook 'after-change-major-mode-hook #'tedit--after-major-mode-change)
     (remove-hook 'after-revert-hook #'tedit--after-revert-hook)
+    (remove-hook 'after-save-hook #'tedit--after-save-hook)
     (advice-remove 'fundamental-mode #'tedit--after-fundamental-mode-advice)
     (advice-remove 'enable-theme #'tedit--cache-cursor-color)
     (advice-remove 'disable-theme #'tedit--cache-cursor-color)
