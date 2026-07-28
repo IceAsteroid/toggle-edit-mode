@@ -404,6 +404,71 @@
 
           ;; Proof: Tedit owned this lock, so it cleans up the physical DOM state
           (expect buffer-read-only :to-be nil)))))
+
+  (describe "Revert Buffer (after-revert-hook) Integration"
+
+    (it "wipes manual user overrides and reinstates base rules"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          ;; Setup: User had temporarily unlocked the buffer manually
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none)
+          (setq buffer-read-only nil)
+
+          ;; Mock focus (User is currently looking at this buffer)
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: Revert finishes and triggers the hook
+          (tedit--after-revert-hook)
+
+          ;; Proof: The 'none override is destroyed, strict 'hard lock is restored
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+
+    (it "upgrades locks if the reverted file became OS-protected on disk"
+      (let ((tedit-soft-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          ;; Setup: Initially just soft-locked and fully writable on disk
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'soft)
+          (setq buffer-read-only nil)
+
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: Emacs natives set `buffer-read-only` to t during revert 
+          ;; because the file on disk became read-only. Then the hook fires.
+          (setq buffer-read-only t)
+          (tedit--after-revert-hook)
+
+          ;; Proof: Tedit captures the new OS state and upgrades to a 'dual lock
+          (expect tedit--native-read-only-p :to-be t)
+          (expect tedit--intended-state :to-be 'dual))))
+
+    (it "evaluates correctly for background buffers without stealing focus"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          ;; Setup: Buffer has a manual override, but is fully writable
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none) 
+          (setq buffer-read-only nil)
+
+          ;; Mock it as a BACKGROUND buffer (auto-revert-mode doing a silent refresh)
+          (spy-on 'selected-window :and-return-value 'other-window)
+          (spy-on 'window-buffer :and-return-value 'other-buffer)
+
+          ;; The Action: Hook fires silently in the background
+          (tedit--after-revert-hook)
+
+          ;; Proof: Engine resets intent to 'hard, but correctly realizes it is in the 
+          ;; background and perfectly executes the Blur-Unlock on the physical DOM!
+          (expect tedit--native-read-only-p :to-be nil)
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be nil))))
   )
 
   (describe "Save As (C-x C-w) / after-save-hook Integration"
