@@ -546,3 +546,6 @@
           (expect tedit--intended-state :to-be 'hard) ;; The brain still wants it locked...
           (expect buffer-read-only :to-be nil))))     ;; ...but reality is unlocked for async writes!
     )
+  )
+
+;;; tedit-test.el ends here
