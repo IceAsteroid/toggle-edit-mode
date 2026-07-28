@@ -405,3 +405,79 @@
           ;; Proof: Tedit owned this lock, so it cleans up the physical DOM state
           (expect buffer-read-only :to-be nil)))))
   )
+
+  (describe "Save As (C-x C-w) / after-save-hook Integration"
+
+    (it "upgrades to read-only when a writable file is saved to a protected location"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/home/user/writable.txt")
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil) ;; Initially captured as writable
+          (setq tedit--intended-state 'hard)
+
+          ;; Mock it as currently focused by the user
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: User saves to an OS-protected location
+          (setq buffer-file-name "/etc/protected.txt")
+          (spy-on 'file-writable-p :and-return-value nil)
+
+          (tedit--after-save-hook)
+
+          ;; Proof: The engine detected the OS restriction and locked it
+          (expect tedit--native-read-only-p :to-be t)
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+
+    (it "drops OS protection when a root file is saved to a writable home directory"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/etc/hosts")
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p t) ;; Initially captured as read-only
+          (setq tedit--intended-state 'hard)
+
+          ;; Mock it as currently focused by the user
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: User saves a copy to their home directory
+          (setq buffer-file-name "/home/user/hosts.txt")
+          (spy-on 'file-writable-p :and-return-value t)
+
+          (tedit--after-save-hook)
+
+          ;; Proof: The engine dropped the OS guard, but kept the base rule ('hard)
+          (expect tedit--native-read-only-p :to-be nil)
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+
+    (it "blur-unlocks dynamically if a root file is saved to home while in the BACKGROUND"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/etc/hosts")
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p t)
+          (setq tedit--intended-state 'hard)
+
+          ;; Mock it as a BACKGROUND buffer (user is focused elsewhere)
+          (spy-on 'selected-window :and-return-value 'other-window)
+          (spy-on 'window-buffer :and-return-value 'other-buffer)
+
+          ;; The Action: Background Elisp saves it to a writable location
+          (setq buffer-file-name "/home/user/hosts.txt")
+          (spy-on 'file-writable-p :and-return-value t)
+
+          (tedit--after-save-hook)
+
+          ;; Proof: The OS guard was dropped. Because it is in the background
+          ;; and now writable, the engine safely BLUR-UNLOCKS the physical DOM!
+          (expect tedit--native-read-only-p :to-be nil)
+          (expect tedit--intended-state :to-be 'hard) ;; The brain still wants it locked...
+          (expect buffer-read-only :to-be nil))))     ;; ...but reality is unlocked for async writes!
+    )
