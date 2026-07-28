@@ -862,7 +862,11 @@ cases that some elisp code needs to write to these buffers."
       (tedit--reconcile (current-buffer)))))
 
 (defun tedit--after-revert-hook ()
-  "Recalculate OS-level locks and intent when a file changes on disk."
+  "Recalculate OS-level locks and intent after a buffer revert.
+
+Because `revert-buffer' is a destructive action that wipes buffer state and
+reloads from disk, this forces the engine to forget past user overrides
+and capture the fresh file state."
   (when tedit-mode
     (setq tedit--native-read-only-p buffer-read-only)
     (setq tedit--intended-state nil)
