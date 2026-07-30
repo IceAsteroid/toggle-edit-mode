@@ -44,6 +44,7 @@
 ;; cannot unlock hard-lock by `tedit-save-buffer-toggle'.
 
 ;; Temporary Overrides vs Permanent Intent
+;;
 ;; When `tedit-always-lock-on-switch' is enabled, the native Emacs
 ;; command `read-only-mode' (C-x C-q) acts as a *temporary
 ;; override*. It will instantly lock/unlock the buffer, allowing you
@@ -68,14 +69,29 @@
 ;;               (let ((inhibit-read-only t)) ;; Force Emacs to ignore the lock temporarily
 ;;                 (apply orig-fun args))))
 
-;; OS-Level Write Protection (Lazy Capture)
-;; `tedit' is designed to never strip an OS-level file permission. However,
-;; it does not aggressively check files when they are opened in the background
-;; (e.g., via `find-file-noselect'). Instead, it lazily captures the file's
-;; read-only state the very first time the buffer is displayed and focused in
-;; a window. This is perfectly safe: because Emacs's event loop is synchronous,
-;; a human cannot possibly mistype `C-x C-q` to accidentally lock a background
-;; buffer before `tedit' captures the true initial state upon window focus.
+;; File System Write Protection (Eager Native Capture)
+;;
+;; `tedit' is designed to never strip native file system write protection.
+;; It captures the file's initial read-only state upon the buffer's very
+;; first evaluation (typically `after-change-major-mode-hook').
+;;
+;; Why read `buffer-read-only' instead of `file-writable-p'?  We do
+;; this to inherit the exact outcome of Emacs's native `find-file'
+;; routine. A file might be strictly read-only on the local file
+;; system, but writable virtually via Emacs (e.g., opened via TRAMP
+;; `/sudo::', or checked out dynamically via VC hooks). By reading
+;; Emacs's native buffer state rather than hitting the file system
+;; directly, we inherit all of Emacs's complex file handlers for free.
+;;
+;; Why Eager Capture instead of Lazy Focus
+;; Capture?  Even for background buffers (e.g., `find-file-noselect'),
+;; the major mode hook runs synchronously before the command loop
+;; yields. This guarantees we capture Emacs's true native state
+;; *before* any rogue background Elisp scripts have a chance to tamper
+;; with `buffer-read-only', preventing race conditions.
+;;
+;; It also guarantees the captured state for native read-only is free
+;; from manual human overrides.
 
 ;;; Bugs
 ;; 1. Fixed.  When a file is write-protected, and the mode of
@@ -179,12 +195,14 @@ its rules."
 This occurs when a manual lock persists before a major mode change into
 a soft-locked major mode, or when visiting native read-only files.
 
-'dual       (Default) Apply the soft-lock on top of the existing hard-lock.
+dual        (Default) Apply the soft-lock on top of the existing hard-lock.
             Users can change the `tedit-save-buffer-toggle's behavior via
-            `tedit-soft-lock-toggle-method' and the native `C-x C-q' command.
-'override   Automatically strip the persisting manual hard-lock and apply the
-            soft-lock. (OS-level write-protection logged by
-            `tedit--file-initially-hard-locked-p' is never stripped)."
+            `tedit-soft-lock-toggle-method' and the native \\[read-only-mode]
+            (`read-only-mode') command.
+
+override    Automatically strip the persisting manual hard-lock and apply the
+            soft-lock.  (File system write protection logged by
+            `tedit--native-read-only-p' is never stripped)."
   :type '(choice (const :tag "Allow Dual Locking (Apply soft-lock on top)" dual)
                  (const :tag "Override manual hard-lock with soft-lock" override))
   :group 'tedit)
@@ -270,6 +288,7 @@ By default, this ignores all hidden/internal buffers starting with `*`."
 
 (defcustom tedit-toggle-inhibit-if-file-initially-hard-locked nil
   "Inhibit manual unlocking of files that were natively write-protected.
+
 When non-nil, `tedit-save-buffer-toggle' will refuse to disable the
 hard-lock if the file was read-only at the time it was opened."
   :type 'boolean
@@ -449,20 +468,32 @@ Such buffers can be configured in
   "The idle timer object responsible for cursor visual sync.")
 
 (defvar-local tedit--native-read-only-p nil
-  "The native `buffer-read-only` state when the file was first opened.
-This protects OS-level permissions from being stripped.  It is lazily
-populated on first focus rather than file-open.
+  "The native `buffer-read-only' state when the file was first opened.
 
-If some elisp sets `read-only-mode' to the buffer visiting a writable file
-in the background and the buffer is not yet switched to a window to
-display. The buffer will now be marked as `tedit--native-read-only-p' t,
-and prevents `tedit-save-buffer-toggle' to toggle hard-lock nor unlock
-it when the buffer is focused out.")
+This prevents `tedit' from accidentally unlocking a buffer that visits
+a natively write-protected file in the file system.  It is strictly
+populated upon the buffer's first evaluation (typically during major
+mode initialization).
+
+See \"File System Write Protection\" in commentary for architecture notes.")
 (put 'tedit--native-read-only-p 'permanent-local t)
 
 (defvar-local tedit--intended-state nil
-  "The actual user intent or evaluated base rule for this buffer.
-Possible values: 'hard, 'soft, 'dual, 'none, 'unmanaged, or nil (unevaluated).")
+"The saved rule or explicit user intent for this buffer's lock state.
+
+This variable stores the expected state that `tedit--reconcile' applies.
+
+Possible values:
+  'hard      - Enforce `buffer-read-only'.
+  'soft      - Enforce `tedit-soft-lock-special--mode'.
+  'dual      - Enforce both locks simultaneously.
+  'none      - The buffer was explicitly toggled unlocked via
+               `tedit-save-buffer-toggle'.  This prevents `tedit' from
+               re-locking the buffer when switching windows, unless
+               `tedit-always-lock-on-switch' is non-nil.
+  'unmanaged - The buffer matches no base rules.  `tedit' ignores it.
+  nil        - Unevaluated.  The base rules will be calculated
+               during the next evaluation.")
 (put 'tedit--intended-state 'permanent-local t)
 
 (defvar-local tedit--needs-re-evaluation nil
@@ -506,17 +537,20 @@ Evaluated in order of fastest (symbol lookup) to slowest (regex) to short-circui
                              tedit-soft-lock-derived-mode-list)))
 
 (defun tedit--compute-effective-state (buf)
-  "Calculate the exact lock BUF should have right now based on rules and intent.
+  "Calculate the lock state that BUF should have based on rules and history.
 
-This function is PURE.  It does not mutate the buffer.  It only
-calculates what state the buffer *ought* to be in, handling
-initialization, OS overrides, and blur-unlocks.
+This function reads the buffer's `tedit--intended-state' to see if a
+manual toggle (like 'none) is active.  If `tedit--intended-state' is
+nil, this function calculates the base rule for the buffer and saves
+it to `tedit--intended-state'.
 
-This function is called by `tedit--reconcile' that actually apply locks
-to the buffer.
+It also handles edge cases, such as upgrading a 'soft rule to 'dual if
+the file in file system is write-protected, or returning an unlocked
+state when a managed buffer loses focus (without overwriting
+`tedit--intended-state').
 
-`tedit--reconcile' is then called in various functions that need to
-evaluate the lock state with rules and then apply the lock."
+This function does not modify the buffer's actual read-only status.
+It only returns the target state symbol for `tedit--reconcile' to apply."
   (with-current-buffer buf
     (let* ((is-focused (eq buf (window-buffer (selected-window))))
            (base-soft (tedit--should-enable-soft-lock-p))
@@ -525,11 +559,20 @@ evaluate the lock state with rules and then apply the lock."
 
       ;; 1. Initialization (Run only once per mode lifecycle)
       (when (null tedit--intended-state)
-        ;; Capture OS-level write protection lazily.
-        ;; QUIRK: If the buffer was spawned in the background, this runs the
-        ;; moment it is finally brought to a window. Because it had no focus,
-        ;; the user could not have typed C-x C-q, guaranteeing `buffer-read-only`
-        ;; here represents the true OS file permission or an explicit Elisp lock.
+        ;; Capture the initial read-only state on first evaluation to
+        ;; cache the native read-only protection state to properly
+        ;; instruct tedit to respect file system write permissions.
+        ;;
+        ;; Architectural Note (Eager Native Capture):
+        ;; We read `buffer-read-only' instead of `file-writable-p' to natively
+        ;; respect TRAMP and VC hooks. Because this runs synchronously via hooks
+        ;; (either during major-mode initialization or the very first window
+        ;; focus), it executes before the user can manually run "C-x C-q" or
+        ;; `read-only-mode' in this buffer yet.
+        ;;
+        ;; The `buffer-read-only' value here strictly represents Emacs's native
+        ;; file system protection, captured before any rogue background Elisp
+        ;; scripts have a chance to tamper with it.
         (unless (local-variable-p 'tedit--native-read-only-p)
           (setq tedit--native-read-only-p buffer-read-only))
 
@@ -546,8 +589,8 @@ evaluate the lock state with rules and then apply the lock."
                   (if base-soft (if (eq tedit-soft-lock-existing-hard-lock-method 'override) 'soft 'dual) 'hard)
                 base-rule)))
 
-      ;; 2. OS-Level Override Guard
-      ;; Enforce hard locks for natively read-only files to protect the filesystem.
+      ;; 2. File System Write Permission Guard
+      ;; Enforce hard lock for write-protected files in the file system.
       (when (and tedit--native-read-only-p
                  ;; QUIRK: NEVER hijack unmanaged buffers, even if they are OS-locked.
                  ;; Leave them entirely alone so Emacs handles them natively.
@@ -571,10 +614,11 @@ evaluate the lock state with rules and then apply the lock."
        (t tedit--intended-state)))))
 
 (defun tedit--reconcile (buf)
-  "Idempotently force BUF to match the Effective State computed by the engine.
-Because of the `unless` and `when` guards, this function safely performs
-ZERO work if the buffer is already in the correct state, making it highly
-performant even when called constantly by `window-selection-change-functions`."
+  "Apply the calculated lock state to BUF.
+
+This function uses `unless' and `when' guards to avoid modifying the
+buffer if it is already in the correct state, minimizing overhead during
+window changes."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (let ((target (tedit--compute-effective-state buf)))
@@ -598,9 +642,12 @@ performant even when called constantly by `window-selection-change-functions`."
           (tedit--update-cursor-color))))))
 
 (defun tedit--focus-handler (&optional frame-or-window)
-  "Evaluate read-only state exactly when a window or buffer receives user focus.
-This acts as the bridge between Emacs's chaotic, imperative event loop
-and tedit's pure declarative engine."
+  "Apply the correct lock state when switching windows or buffers.
+
+For buffers that are focused in and focused out when switching.
+
+FRAME-OR-WINDOW is an argument received from a hook such as
+`window-selection-change-functions' where this function is hooked."
   (let* ((win (if (windowp frame-or-window) frame-or-window (selected-window)))
          (buf (window-buffer win))
          (switched-p (not (eq tedit--last-focused-buffer buf)))
@@ -611,8 +658,9 @@ and tedit's pure declarative engine."
     ;; GUARD CLAUSES: Do nothing if refactoring, in a recursive minibuffer,
     ;; returning from a side-panel tree view, or mid-mode transition.
     ;;
-    ;; CRITICAL FIX & QUIRK (Pointer Paralysis): Check the OUTGOING buffer (last-buf/last-win)
-    ;; for relock-inhibit rules, so returning from treemacs back to code doesn't falsely bypass logic.
+    ;; Check the previous buffer for relock-inhibit rules so returning
+    ;; from a side-panel doesn't falsely bypass logic.
+    ;;
     ;; If the incoming buffer matches an inhibit rule, this block aborts BEFORE
     ;; `tedit--last-focused-buffer` updates. This creates "Transient Invisibility",
     ;; perfectly preserving your manual lock states when you close the side-panel.
@@ -631,7 +679,11 @@ and tedit's pure declarative engine."
                                              nil
                                              tedit-relock-inhibit-from-mode-list))))
 
-      ;; Feature: always-lock-on-switch OR deferred mode evaluation
+      ;; If `tedit-always-lock-on-switch' is true, clear the saved
+      ;; state whenever the user switches to refocus a buffer. This
+      ;; forces `tedit--reconcile' to strictly re-apply the base
+      ;; rules, removing temporary unlocks for the buffer.
+      ;;
       ;; QUIRK: We gate this behind `switched-p` so we ignore minor background redisplays.
       ;; Parity with Old Design: If `always-lock-on-switch` is true, we act as a
       ;; ruthless enforcer. If you switch windows, we wipe your manual toggles and
@@ -645,7 +697,7 @@ and tedit's pure declarative engine."
             (setq tedit--intended-state nil))
           (setq tedit--needs-re-evaluation nil)))
 
-      ;; Reconcile Outgoing Buffer (Triggers blur-unlocks for the buffer we just left)
+      ;; Reconcile focused-out buffer (triggers blur-unlocks for the buffer that's left)
       ;; FIX: Do not attempt to blur-unlock a buffer that was just killed.
       (when (and last-buf switched-p (buffer-live-p last-buf))
         (tedit--reconcile last-buf))
@@ -776,7 +828,7 @@ before the new mode takes over."
             (run-hooks 'tedit-toggle-inhibit-save-buffer-hook))
           (setq-local tedit--saved-tick current-tick)))))
 
-  ;; 2. OS-Level Native Guard
+  ;; 2. File System Write Permission Native Guard
   (if (and tedit-toggle-inhibit-if-file-initially-hard-locked tedit--native-read-only-p)
       (message "Toggling inhibited: File visited as natively read-only.")
 
@@ -809,11 +861,12 @@ before the new mode takes over."
                     ('hard-lock 'hard)
                     ('both-lock 'dual)))
                  (base-hard 'hard)
-                 ;; Fallback lock method for explicitly allowed unmanaged buffers
-                 (t 'hard))))
+                 ;; Fallback: If unlocked and unmanaged (but allowed by whitelist), lock it.
+                 (t 'hard)))))
 
-        ;; 5. Apply the new intent immediately
-        (tedit--reconcile (current-buffer))))))
+      ;; 5. Apply the new intent immediately
+      (tedit--reconcile (current-buffer))))))
+
 
 ;;; Package Integration
 
@@ -862,38 +915,48 @@ cases that some elisp code needs to write to these buffers."
       (tedit--reconcile (current-buffer)))))
 
 (defun tedit--after-revert-hook ()
-  "Recalculate OS-level locks and intent after a buffer revert.
+  "Recalculate native read-only lock and intent after a buffer revert.
 
-Because `revert-buffer' is a destructive action that wipes buffer state and
-reloads from disk, this forces the engine to forget past user overrides
-and capture the fresh file state."
+According to the initial read-only state managed by Emacs revert
+handling, re-cache the state to `tedit--native-read-only-p'.  Instead of
+re-caching directly according to the write permission in the file
+system.
+
+Because `revert-buffer' is a destructive action that wipes buffer state
+and reloads from the file system, this forces the engine to forget past
+user overrides and capture the fresh file state."
   (when tedit-mode
     (setq tedit--native-read-only-p buffer-read-only)
     (setq tedit--intended-state nil)
     (tedit--reconcile (current-buffer))))
 
 (defun tedit--after-save-hook ()
-  "Conditionally recalculate OS-level locks if write permission changes when saved or renamed.
+  "Conditionally recalculate native read-only lock if write permission changes when saved or renamed.
+
+According to the actual file write permission in the file system.
 
 This catches the file write permission changes when a file is saved or renamed
 by a command such as \\[write-file](`write-file'), for example, a root file is
 renamed to save in a home directory, and now is writable.
 
-If the physical disk permissions contradict the engine's permanent anchor
+If the file system write permission contradicts the engine's permanent anchor
 (`tedit--native-read-only-p'), tedit wipes the current intent and forces
 a strict re-evaluation of the new real state.
 
-This is deliberately decoupled from `tedit--after-revert-hook` because
+This is deliberately decoupled from `tedit--after-revert-hook' because
 saving preserves buffer state, whereas reverting destroys it."
   (when (and tedit-mode buffer-file-name (local-variable-p 'tedit--native-read-only-p))
-    ;; 1. Check the new physical reality of the file on disk
+    ;; 1. Check if the file in the file system is currently write-protected
     (let ((is-natively-readonly (not (file-writable-p buffer-file-name))))
-      ;; 2. Only act if the OS permission contradicts our permanent anchor
+      ;; 2. Only act if the file write permission contradicts our
+      ;; permanent anchor
       (unless (eq tedit--native-read-only-p is-natively-readonly)
-        ;; 3. Update the anchor to match physical reality
+        ;; 3. Update the anchor to match the file's write permission
+        ;; on the file system
         (setq tedit--native-read-only-p is-natively-readonly)
-        ;; 4. A change in OS permission invalidates the current intent.
-        ;; Wipe it and force the Brain to calculate the new reality.
+        ;; 4. A change in file's write permission in the file system
+        ;; invalidates the saved state.  Set it to nil to force a
+        ;; re-evaluation.
         (setq tedit--intended-state nil)
         (tedit--reconcile (current-buffer))))))
 
