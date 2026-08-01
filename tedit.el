@@ -592,20 +592,34 @@ It only returns the target state symbol for `tedit--reconcile' to apply."
       ;; 2. File System Write Permission Guard
       ;; Enforce hard lock for write-protected files in the file system.
       (when (and tedit--native-read-only-p
-                 ;; QUIRK: NEVER hijack unmanaged buffers, even if they are OS-locked.
-                 ;; Leave them entirely alone so Emacs handles them natively.
-                 (not (eq tedit--intended-state 'unmanaged))
-                 (not (memq tedit--intended-state '(hard dual))))
-        ;; If the rules wanted a soft lock, upgrade it to dual to respect the OS.
-        (setq tedit--intended-state (if (eq tedit--intended-state 'soft) 'dual 'hard)))
+                 ;; QUIRK: NEVER hijack unmanaged buffers, even if
+                 ;; they are write-protected.  Leave them entirely
+                 ;; alone so Emacs handles them natively.
+                 (not (eq tedit--intended-state 'unmanaged)))
+        ;; CRITICAL: We NEVER intercept 'none here. If the state is
+        ;; 'none, it means the user explicitly used
+        ;; `tedit-save-buffer-toggle' to unlock the buffer (having
+        ;; disabled the file system toggle inhibition). We must
+        ;; strictly respect their explicit manual override.
+        ;;
+        ;; `tedit-save-buffer-toggle' first sets
+        ;; `tedit--intended-state' according to the toggle rules, and
+        ;; then the calls `tedit--reconcile' which calls this
+        ;; function, to apply the lock rules.
 
-      ;; 3. Dynamic Focus Evaluation (The "Blur-Unlock" Feature)
+        ;; If the rules wanted a soft lock, upgrade it to dual to
+        ;; respect the file system write-protected permission.
+        (when (eq tedit--intended-state 'soft)
+          (setq tedit--intended-state 'dual)))
+
+      ;; 3. Background Buffer Handling
       ;; If a buffer is running in the background, we drop the hard lock so async
       ;; processes can write to it, but we remember what it *should* be when focused.
       (cond
        ((not is-focused)
         (cond
-         (tedit--native-read-only-p tedit--intended-state) ;; Never unlock OS files
+         (tedit--native-read-only-p ;; never unlock a buffer that visits a write-protected file.
+          tedit--intended-state)
          ((eq tedit--intended-state 'hard)
           ;; Only blur-unlock if it's a managed buffer
           (if (eq base-rule 'unmanaged) 'hard 'none))
