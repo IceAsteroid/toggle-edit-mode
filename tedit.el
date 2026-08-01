@@ -924,8 +924,18 @@ system.
 
 Because `revert-buffer' is a destructive action that wipes buffer state
 and reloads from the file system, this forces the engine to forget past
-user overrides and capture the fresh file state."
-  (when tedit-mode
+user overrides and capture the fresh file state.
+
+NOTE:
+
+1. This will not be triggered for non-file-visiting buffers.
+
+2. This will not be triggered for a buffer that uses a custom function
+set in `revert-buffer-function'."
+  ;; Though normally `after-revert-hook' will not be triggered by a
+  ;; non-visiting buffer. we still add `buffer-file-name' as a guard.
+  (when (and tedit-mode
+             buffer-file-name)
     (setq tedit--native-read-only-p buffer-read-only)
     (setq tedit--intended-state nil)
     (tedit--reconcile (current-buffer))))
