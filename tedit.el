@@ -945,9 +945,23 @@ a strict re-evaluation of the new real state.
 
 This is deliberately decoupled from `tedit--after-revert-hook' because
 saving preserves buffer state, whereas reverting destroys it."
-  (when (and tedit-mode buffer-file-name (local-variable-p 'tedit--native-read-only-p))
-    ;; 1. Check if the file in the file system is currently write-protected
-    (let ((is-natively-readonly (not (file-writable-p buffer-file-name))))
+  (when (and tedit-mode buffer-file-name)
+    ;; Fix: handle tramp or remote file quirks properly.
+    ;; 1. Determine if the saved file is natively write-protected.
+    (let ((is-natively-readonly
+           (if (file-remote-p buffer-file-name)
+               ;; Remote file: a successful save proves the file is
+               ;; writable on the remote host.  Do NOT call
+               ;; `file-writable-p' here — it initiates a separate
+               ;; TRAMP operation requiring independent authentication,
+               ;; which can spuriously fail and corrupt the anchor.
+               nil
+             ;; Local file: `file-writable-p' is a fast local syscall.
+             ;; It correctly detects the case where a writable file was
+             ;; saved (via `write-file') to a write-protected location
+             ;; (e.g. root overriding permission bits).
+             (not (file-writable-p buffer-file-name)))))
+
       ;; 2. Only act if the file write permission contradicts our
       ;; permanent anchor
       (unless (eq tedit--native-read-only-p is-natively-readonly)
