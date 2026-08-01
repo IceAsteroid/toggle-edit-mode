@@ -842,31 +842,40 @@ before the new mode takes over."
             (run-hooks 'tedit-toggle-inhibit-save-buffer-hook))
           (setq-local tedit--saved-tick current-tick)))))
 
-  ;; 2. File System Write Permission Native Guard
-  (if (and tedit-toggle-inhibit-if-file-initially-hard-locked tedit--native-read-only-p)
-      (message "Toggling inhibited: File visited as natively read-only.")
+  (let* ((base-soft (tedit--should-enable-soft-lock-p))
+         (base-hard (tedit--should-enable-hard-lock-p))
+         (base-rule (cond (base-soft 'soft) (base-hard 'hard) (t 'unmanaged))))
+    (cond
+     ;; 2. Check Unmanaged Buffers Inhibition
+     ((and (eq base-rule 'unmanaged)
+           tedit-toggle-inhibit-unmanaged-buffers
+           (not (tedit--match-rules-p tedit-toggle-always-allow-buffer-regexps
+                                      nil
+                                      tedit-toggle-always-allow-mode-list)))
+      (message "Toggle inhibited: Buffer is not managed by tedit."))
 
-    (let* ((base-soft (tedit--should-enable-soft-lock-p))
-           (base-hard (tedit--should-enable-hard-lock-p))
-           (base-rule (cond (base-soft 'soft) (base-hard 'hard) (t 'unmanaged))))
+     ;; 3. File System Write Permission Native Guard
+     ((and tedit-toggle-inhibit-if-file-initially-hard-locked tedit--native-read-only-p)
+      (message "Toggle inhibited: Buffer is natively read-only."))
 
-      ;; 3. Check Unmanaged Buffers Inhibition
-      (if (and (eq base-rule 'unmanaged)
-               tedit-toggle-inhibit-unmanaged-buffers
-               (not (tedit--match-rules-p tedit-toggle-always-allow-buffer-regexps nil tedit-toggle-always-allow-mode-list)))
-          (message "Toggle inhibited: Buffer is not managed by tedit.")
-
-        ;; QUIRK: Sync intent with physical reality before cycling an unmanaged buffer.
-        ;; If the buffer is unmanaged, but the user temporarily pressed native C-x C-q,
-        ;; we adopt the current physical state BEFORE cycling it, so the toggle
-        ;; transitions correctly instead of blindly applying the base rule.
-        (when (eq tedit--intended-state 'unmanaged)
-          (setq tedit--intended-state (if buffer-read-only 'hard 'none)))
-
-        ;; 4. Cycle User Intent
+     ;; 4. Cycle the lock state
+     ;;
+     ;; Check the actual buffer state instead of `tedit--intended-state'.
+     ;; If a user manually runs `read-only-mode' (C-x C-q), it changes
+     ;; `buffer-read-only' but does NOT update `tedit--intended-state'.
+     ;; By checking `is-locked' directly, this toggle command correctly
+     ;; locks or unlocks the buffer based on its current status, even if
+     ;; the user previously bypassed tedit's rules.
+     ;;
+     ;; This also implicitly handles unmanaged buffers. Because they have
+     ;; no base rules, an unlocked unmanaged buffer falls through the `cond`
+     ;; directly into the `(t 'hard)` fallback.
+     (t
+      (let ((is-locked (or buffer-read-only
+                           (bound-and-true-p tedit-soft-lock-special--mode))))
         (setq tedit--intended-state
               ;; If currently locked by ANY method, the user's intent is to unlock it.
-              (if (memq tedit--intended-state '(hard soft dual))
+              (if is-locked
                   'none
                 (cond
                  (base-soft
