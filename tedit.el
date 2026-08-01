@@ -536,6 +536,12 @@ Evaluated in order of fastest (symbol lookup) to slowest (regex) to short-circui
                              tedit-soft-lock-major-mode-list
                              tedit-soft-lock-derived-mode-list)))
 
+(defun tedit--buffer-managed-p ()
+  "Return non-nil if current buffer qualifies for tedit's hard or soft lock.
+This checks the enable lists; it does not consider ignore lists."
+  (or (tedit--should-enable-hard-lock-p)
+      (tedit--should-enable-soft-lock-p)))
+
 (defun tedit--compute-effective-state (buf)
   "Calculate the lock state that BUF should have based on rules and history.
 
