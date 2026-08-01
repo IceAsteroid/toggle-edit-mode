@@ -8,9 +8,9 @@
 
 (describe "Tedit Core Engine"
 
-  (describe "tedit--compute-effective-state (The Brain)"
+  (describe "tedit--compute-effective-state (The Evaluator)"
 
-    (it "lazily captures native OS lock on first focus"
+    (it "lazily captures file system write-protected state on first focus"
       (let ((tedit-hard-lock-major-mode-list '(text-mode)))
         (with-temp-buffer
           (text-mode)
@@ -30,7 +30,7 @@
             (expect tedit--native-read-only-p :to-be t)
             (expect result :to-be 'hard)))))
 
-    (it "blur-unlocks managed hard-locked buffers in the background"
+    (it "unlocks managed hard-locked buffers when relegated to the background"
       (let ((tedit-hard-lock-major-mode-list '(text-mode)))
         (with-temp-buffer
           (text-mode)
@@ -44,7 +44,7 @@
           (let ((result (tedit--compute-effective-state (current-buffer))))
             (expect result :to-be 'none)))))
 
-    (it "NEVER blur-unlocks an OS natively write-protected file"
+    (it "NEVER unlocks a file system write-protected file in the background"
       (let ((tedit-hard-lock-major-mode-list '(text-mode)))
         (with-temp-buffer
           (text-mode)
@@ -69,10 +69,11 @@
           (spy-on 'selected-window :and-return-value 'mock-window)
           (spy-on 'window-buffer :and-return-value (current-buffer))
 
-          ;; The brain sees a soft-lock rule, but the OS says read-only, so it safely merges them.
+          ;; The engine sees a soft-lock rule, but Emacs file handling
+          ;; determines initial read-only for the visited file, so it
+          ;; safely merges them.
           (expect (tedit--compute-effective-state (current-buffer)) :to-be 'dual))))
 
-    ;; FIX: We test Rule Conflicts here, not OS Conflicts!
     (it "resolves a regex rule conflict (Hard AND Soft match) to 'soft if method is 'override"
       (let ((tedit-hard-lock-major-mode-list '(text-mode)) ;; Wants Hard
             (tedit-soft-lock-major-mode-list '(text-mode)) ;; Wants Soft
@@ -91,17 +92,17 @@
           (expect (tedit--compute-effective-state (current-buffer)) :to-be 'soft)))))
 
 
-  (describe "tedit--reconcile (The Physical Enforcer)"
+  (describe "tedit--reconcile (The State Enforcer)"
 
-    (it "physically applies both read-only and soft-lock modes for a DUAL state"
+    (it "applies both read-only and soft-lock modes to the buffer for a DUAL state"
       (with-temp-buffer
-        ;; Spy on the brain to force a 'dual state return, isolating the Enforcer's logic
+        ;; Spy on the evaluator to force a 'dual state return, isolating the Enforcer's logic
         (spy-on 'tedit--compute-effective-state :and-return-value 'dual)
         (setq buffer-read-only nil)
 
         (tedit--reconcile (current-buffer))
 
-        ;; Proof: Both physical DOM manipulations occurred
+        ;; Proof: Both buffer state manipulations occurred
         (expect buffer-read-only :to-be t)
         (expect (bound-and-true-p tedit-soft-lock-special--mode) :to-be t))))
 
@@ -110,7 +111,7 @@
 
     (describe "When tedit-clear-hard-lock-before-mode-change is TRUE"
 
-      (it "physically drops the lock and clears cache if apply-locks is TRUE"
+      (it "drops the lock and clears cache if apply-locks is TRUE"
         (let ((tedit-clear-hard-lock-before-mode-change t)
               (tedit-apply-locks-on-mode-change t)
               (tedit-hard-lock-major-mode-list '(text-mode)))
@@ -125,7 +126,7 @@
             (expect buffer-read-only :to-be nil)
             (expect tedit--intended-state :to-be nil))))
 
-      (it "physically drops the lock but DEFERS evaluation if apply-locks is FALSE"
+      (it "drops the lock but DEFERS evaluation if apply-locks is FALSE"
         (let ((tedit-clear-hard-lock-before-mode-change t)
               (tedit-apply-locks-on-mode-change nil)
               (tedit-hard-lock-major-mode-list '(text-mode)))
@@ -139,7 +140,99 @@
 
             (expect buffer-read-only :to-be nil)
             (expect tedit--intended-state :to-be 'hard)
-            (expect tedit--needs-re-evaluation :to-be t))))))
+            (expect tedit--needs-re-evaluation :to-be t))))
+
+      (it "never physically unlocks a file system write-protected buffer before a mode change"
+        (let ((tedit-clear-hard-lock-before-mode-change t)
+              (tedit-apply-locks-on-mode-change t)
+              (tedit-hard-lock-major-mode-list '(text-mode)))
+          (with-temp-buffer
+            (text-mode)
+            (setq buffer-read-only t)             ;; Currently locked
+            (setq tedit--native-read-only-p t)    ;; File system write-protected
+            (setq tedit--intended-state 'hard)
+
+            ;; The Action: major mode is about to change.
+            (tedit--before-major-mode-change)
+
+            ;; Proof: The physical lock is preserved.  Even though
+            ;; `clear-hard-lock-before-mode-change' is t, a file that
+            ;; is natively write-protected on the file system must
+            ;; NEVER have its physical lock stripped — the condition
+            ;; `(not tedit--native-read-only-p)' in should-clear-physical
+            ;; guards against this.
+            (expect buffer-read-only :to-be t))))
+      )
+
+    (describe "When tedit-clear-hard-lock-before-mode-change is FALSE"
+
+      (it "preserves the native hard-lock and clears auto-computed intent across a mode change"
+        (let ((tedit-clear-hard-lock-before-mode-change nil)
+              (tedit-apply-locks-on-mode-change t)
+              (tedit-hard-lock-major-mode-list '(text-mode)))
+          (with-temp-buffer
+            (text-mode)
+            (setq buffer-read-only t)
+            (setq tedit--native-read-only-p nil)
+            (setq tedit--intended-state 'hard)  ;; auto-computed, equals base-rule
+
+            ;; The Action: major mode is about to change.
+            (tedit--before-major-mode-change)
+
+            ;; Proof: Physical lock is untouched because
+            ;; `should-clear-physical' is nil when
+            ;; `clear-hard-lock-before-mode-change' is nil.
+            (expect buffer-read-only :to-be t)
+            ;; Intent cache is cleared because the state was
+            ;; auto-computed (eq intended-state base-rule),
+            ;; so the new mode triggers fresh evaluation.
+            (expect tedit--intended-state :to-be nil))))
+
+      (it "preserves a manual override across a mode change"
+        (let ((tedit-clear-hard-lock-before-mode-change nil)
+              (tedit-apply-locks-on-mode-change t)
+              (tedit-hard-lock-major-mode-list '(text-mode)))
+          (with-temp-buffer
+            (text-mode)
+            (setq buffer-read-only nil)
+            (setq tedit--native-read-only-p nil)
+            (setq tedit--intended-state 'none)  ;; manual override, ≠ base-rule 'hard
+
+            ;; The Action: major mode is about to change.
+            (tedit--before-major-mode-change)
+
+            ;; Proof: Manual override is preserved.  The condition
+            ;; (eq intended-state base-rule) is nil, so the cache
+            ;; is left intact — the user's explicit unlock survives
+            ;; the mode transition.
+            (expect tedit--intended-state :to-be 'none))))
+      )
+
+    (it "re-evaluates the buffer based on new major mode rules after a mode change"
+      (let ((tedit-apply-locks-on-mode-change t)
+            (tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          ;; Buffer is currently unmanaged (fundamental-mode)
+          (fundamental-mode)
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'unmanaged)
+
+          ;; Simulate switching to a managed major mode
+          (text-mode)
+
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: after-change-major-mode-hook fires.
+          (tedit--after-major-mode-change)
+
+          ;; Proof: The buffer is re-evaluated under the new mode's
+          ;; rules.  `text-mode' matches hard-lock-derived-mode-list,
+          ;; so the engine applies a hard lock.
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+    )
 
 
   (describe "tedit--focus-handler (The Event Loop)"
@@ -229,7 +322,6 @@
           ;; Proof: Prevents the engine from stealing focus during M-: evaluations
           (expect 'tedit--reconcile :not :to-have-been-called))))
 
-    ;; NEW: Proving the Dead Buffer Guard
     (it "handles deleted outgoing buffers safely without throwing an error"
       (with-temp-buffer
         ;; 1. Setup a dummy buffer, assign it to last-buf, and immediately kill it
@@ -243,7 +335,65 @@
 
           ;; 3. Proof: If the dead buffer guard fails, this throws "Selecting deleted buffer".
           ;; If it succeeds, the focus handler executes cleanly without throwing.
-          (expect (tedit--focus-handler) :not :to-throw)))))
+          (expect (tedit--focus-handler) :not :to-throw))))
+
+    (it "does not update last-focused-buffer when the incoming buffer is a minibuffer"
+      (let ((tedit-always-lock-on-switch t)
+            (tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq tedit--intended-state 'none)
+
+          ;; The buffer was focused before the minibuffer appeared
+          (setq tedit--last-focused-buffer (current-buffer))
+
+          (spy-on 'tedit--reconcile)
+
+          ;; The Action: A minibuffer (TRAMP password prompt, M-x, etc.)
+          ;; steals focus.  The guard `(minibufferp buf)' triggers.
+          (spy-on 'selected-window :and-return-value 'minibuffer-window)
+          (spy-on 'window-buffer :and-return-value 'minibuffer-buffer)
+          (spy-on 'minibufferp :and-return-value t)
+
+          (tedit--focus-handler)
+
+          ;; Proof: The guard blocked the entire body.  The reconciler
+          ;; was never called, and `last-focused-buffer' was never
+          ;; overwritten with the minibuffer — it still points to the
+          ;; real buffer, which is the mechanism that preserves
+          ;; `switched-p' = nil when focus returns.
+          (expect tedit--last-focused-buffer :to-be (current-buffer))
+          (expect 'tedit--reconcile :not :to-have-been-called))))
+
+    (it "preserves manual overrides when switched-p is nil despite always-lock being t"
+      (let ((tedit-always-lock-on-switch t)
+            (tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none) ;; User toggled unlocked
+
+          ;; Same buffer = switched-p is nil.  This is exactly what
+          ;; happens after a minibuffer round-trip: the minibuffer
+          ;; guard prevented `last-focused-buffer' from being updated,
+          ;; so when focus returns, the incoming buffer matches
+          ;; the stored buffer.
+          (setq tedit--last-focused-buffer (current-buffer))
+
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: Focus handler fires for the same buffer
+          ;; (e.g., returning from a TRAMP password prompt).
+          (tedit--focus-handler)
+
+          ;; Proof: `'none' survived.  `always-lock-on-switch' is gated
+          ;; behind `switched-p', which is nil here, so the reset logic
+          ;; never fired.
+          (expect tedit--intended-state :to-be 'none)
+          (expect buffer-read-only :to-be nil))))
+    )
 
 
   (describe "tedit-save-buffer-toggle (The Master Command)"
@@ -276,25 +426,85 @@
 
           (tedit-save-buffer-toggle)
 
-          ;; Proof: OS guard overrides the user's manual toggle attempt
+          ;; Proof: File write permission guard overrides the user's
+          ;; manual toggle attempt
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be t))))
 
-    (it "syncs physical C-x C-q reality before cycling an unmanaged buffer"
+    (it "allows unlocking file system write-protected files if toggle inhibition is OFF"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode))
+            ;; THE CRITICAL VARIABLE: User explicitly allows unlocking OS files
+            (tedit-toggle-inhibit-if-file-initially-hard-locked nil)
+            (tedit-toggle-save-on-toggle nil))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p t)
+          (setq tedit--intended-state 'hard)
+
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; The Action: User presses the toggle button
+          (tedit-save-buffer-toggle)
+
+          ;; Proof: The toggle successfully sets intent to 'none, and the
+          ;; File write permission-Guard respects the user's manual
+          ;; override instead of blocking it!
+          (expect tedit--intended-state :to-be 'none)
+          (expect buffer-read-only :to-be nil))))
+
+    (it "uses actual buffer state to successfully unlock an unmanaged buffer in 1 tap"
       (let ((tedit-hard-lock-major-mode-list nil)
             (tedit-toggle-save-on-toggle nil)
-            ;; TRAP: This MUST be nil, otherwise the test aborts before syncing logic occurs.
             (tedit-toggle-inhibit-unmanaged-buffers nil))
         (with-temp-buffer
           (fundamental-mode) ;; Unmanaged
           (setq tedit--intended-state 'unmanaged)
           (setq buffer-read-only t) ;; User physically locked it via C-x C-q
 
-          ;; The toggle syncs 'unmanaged -> 'hard -> 'none
+          ;; The toggle queries the buffer state (t), and immediately targets 'none
           (tedit-save-buffer-toggle)
 
           (expect tedit--intended-state :to-be 'none)
           (expect buffer-read-only :to-be nil))))
+
+    (it "uses the fallback rule to lock an unlocked unmanaged buffer"
+      (let ((tedit-hard-lock-major-mode-list nil)
+            (tedit-toggle-save-on-toggle nil)
+            (tedit-toggle-inhibit-unmanaged-buffers nil))
+        (with-temp-buffer
+          (fundamental-mode) ;; Unmanaged
+          (setq tedit--intended-state 'unmanaged)
+          (setq buffer-read-only nil) ;; Buffer is completely free
+
+          ;; The toggle queries the buffer state (nil), falls through to (t 'hard)
+          (tedit-save-buffer-toggle)
+
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+
+    (it "heals a desynchronized managed buffer in 1 tap by querying the actual buffer state"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode))
+            (tedit-toggle-save-on-toggle nil))
+        (with-temp-buffer
+          (text-mode)
+
+          ;; FIX: Mock focus! Otherwise the engine realizes this temp buffer is
+          ;; in the background and ruthlessly blur-unlocks it right before the expect!
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; SETUP THE DESYNC: Engine thinks it's locked, but it is actually unlocked natively
+          (setq tedit--intended-state 'hard)
+          (setq buffer-read-only nil)
+
+          ;; The toggle queries the actual buffer state (nil). It wants to lock.
+          (tedit-save-buffer-toggle)
+
+          ;; Proof: It locked the buffer immediately. No double-tap required!
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
 
     (it "refuses to cycle an unmanaged buffer when inhibition is ON"
       (let ((tedit-hard-lock-major-mode-list nil)
@@ -336,9 +546,11 @@
             (tedit-toggle-save-on-toggle nil))
         (with-temp-buffer
           (text-mode)
-          ;; TRAP: To test the cycle target, the buffer must start fully unlocked.
-          ;; If it starts at 'soft, the toggle logic unconditionally unlocks it to 'none!
           (setq tedit--intended-state 'none)
+          ;; FIX: `(text-mode)` triggered global hooks that physically soft-locked
+          ;; this buffer. We MUST drop the physical lock here, otherwise the
+          ;; DOM-first toggle command will correctly see the lock and unlock it!
+          (tedit-soft-lock-special--mode -1)
 
           (tedit-save-buffer-toggle)
           (expect tedit--intended-state :to-be 'dual))))
@@ -350,9 +562,27 @@
         (with-temp-buffer
           (text-mode)
           (setq tedit--intended-state 'none)
+          ;; FIX: Drop the physical soft-lock applied by the global mode hooks
+          (tedit-soft-lock-special--mode -1)
 
           (tedit-save-buffer-toggle)
-          (expect tedit--intended-state :to-be 'hard)))))
+          (expect tedit--intended-state :to-be 'hard))))
+
+    (it "cycles to 'soft when method is set to 'soft-lock (the default)"
+      (let ((tedit-soft-lock-major-mode-list '(text-mode))
+            (tedit-soft-lock-toggle-method 'soft-lock)
+            (tedit-toggle-save-on-toggle nil))
+        (with-temp-buffer
+          (text-mode)
+          (setq tedit--intended-state 'none)
+          ;; Drop the physical soft-lock applied by global mode hooks
+          (tedit-soft-lock-special--mode -1)
+
+          (tedit-save-buffer-toggle)
+
+          (expect tedit--intended-state :to-be 'soft)
+          (expect (bound-and-true-p tedit-soft-lock-special--mode) :to-be t))))
+    )
 
   (describe "Saving Logic during Toggle"
     (it "runs the custom inhibit-save hook when basic saving is bypassed"
@@ -372,7 +602,37 @@
 
           (tedit-save-buffer-toggle)
 
-          (expect hook-ran :to-be t)))))
+          (expect hook-ran :to-be t))))
+
+    (it "calls basic-save-buffer when toggling to lock an unlocked file-visiting buffer"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode))
+            (tedit-toggle-save-on-toggle t))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/tmp/test-file.txt")
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none)
+
+          ;; FIX: Mock focus to prevent the temp buffer from being
+          ;; blur-unlocked by the background handler in reconcile.
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+
+          ;; Spy on `basic-save-buffer' to verify it is invoked
+          ;; without actually writing to the file system.
+          (spy-on 'basic-save-buffer)
+
+          ;; The Action: User presses the toggle to lock and save.
+          (tedit-save-buffer-toggle)
+
+          ;; Proof: `basic-save-buffer' was called because the buffer
+          ;; was unlocked, visits a file, and save-on-toggle is t.
+          (expect 'basic-save-buffer :to-have-been-called-times 1)
+          ;; The buffer was locked after saving.
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+    )
 
   (describe "tedit--cleanup-buffer (Buffer Teardown)"
     (it "leaves manual locks intact on unmanaged buffers"
@@ -402,8 +662,30 @@
 
           (tedit--cleanup-buffer)
 
-          ;; Proof: Tedit owned this lock, so it cleans up the physical DOM state
-          (expect buffer-read-only :to-be nil)))))
+          ;; Proof: Tedit owned this lock, so it cleans up the buffer state
+          (expect buffer-read-only :to-be nil))))
+
+    (it "re-locks file system write-protected buffers during teardown regardless of managed rules"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode) ;; Managed by hard-lock rules
+
+          ;; Simulate: the buffer was unlocked (e.g., via
+          ;; `inhibit-read-only') while tedit was active, but the
+          ;; underlying file is write-protected on the file system.
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p t)
+          (setq tedit--intended-state 'hard)
+
+          ;; The Action: tedit-mode exits, cleanup runs.
+          (tedit--cleanup-buffer)
+
+          ;; Proof: Buffer is re-locked.  File system write protection
+          ;; takes priority over the managed rule (which would normally
+          ;; strip the lock).  The `if tedit--native-read-only-p' branch
+          ;; in cleanup ensures this.
+          (expect buffer-read-only :to-be t))))
+    )
 
   (describe "Revert Buffer (after-revert-hook) Integration"
 
@@ -412,6 +694,7 @@
         (with-temp-buffer
           (text-mode)
           ;; Setup: User had temporarily unlocked the buffer manually
+          (setq buffer-file-name "/tmp/test.txt")
           (setq tedit--native-read-only-p nil)
           (setq tedit--intended-state 'none)
           (setq buffer-read-only nil)
@@ -427,11 +710,12 @@
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be t))))
 
-    (it "upgrades locks if the reverted file became OS-protected on disk"
+    (it "upgrades locks if the reverted file became write-protected on file system"
       (let ((tedit-soft-lock-major-mode-list '(text-mode)))
         (with-temp-buffer
           (text-mode)
           ;; Setup: Initially just soft-locked and fully writable on disk
+          (setq buffer-file-name "/tmp/test.txt")
           (setq tedit--native-read-only-p nil)
           (setq tedit--intended-state 'soft)
           (setq buffer-read-only nil)
@@ -439,12 +723,12 @@
           (spy-on 'selected-window :and-return-value 'mock-window)
           (spy-on 'window-buffer :and-return-value (current-buffer))
 
-          ;; The Action: Emacs natives set `buffer-read-only` to t during revert 
+          ;; The Action: Emacs natives set `buffer-read-only` to t during revert
           ;; because the file on disk became read-only. Then the hook fires.
           (setq buffer-read-only t)
           (tedit--after-revert-hook)
 
-          ;; Proof: Tedit captures the new OS state and upgrades to a 'dual lock
+          ;; Proof: Tedit captures the new write permission and upgrades to a 'dual lock
           (expect tedit--native-read-only-p :to-be t)
           (expect tedit--intended-state :to-be 'dual))))
 
@@ -453,8 +737,9 @@
         (with-temp-buffer
           (text-mode)
           ;; Setup: Buffer has a manual override, but is fully writable
+          (setq buffer-file-name "/tmp/test.txt")
           (setq tedit--native-read-only-p nil)
-          (setq tedit--intended-state 'none) 
+          (setq tedit--intended-state 'none)
           (setq buffer-read-only nil)
 
           ;; Mock it as a BACKGROUND buffer (auto-revert-mode doing a silent refresh)
@@ -464,8 +749,8 @@
           ;; The Action: Hook fires silently in the background
           (tedit--after-revert-hook)
 
-          ;; Proof: Engine resets intent to 'hard, but correctly realizes it is in the 
-          ;; background and perfectly executes the Blur-Unlock on the physical DOM!
+          ;; Proof: Engine resets intent to 'hard, but correctly realizes it is in the
+          ;; background and perfectly executes the background unlock logic
           (expect tedit--native-read-only-p :to-be nil)
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be nil))))
@@ -486,18 +771,18 @@
           (spy-on 'selected-window :and-return-value 'mock-window)
           (spy-on 'window-buffer :and-return-value (current-buffer))
 
-          ;; The Action: User saves to an OS-protected location
+          ;; The Action: User saves to a write-protected location
           (setq buffer-file-name "/etc/protected.txt")
           (spy-on 'file-writable-p :and-return-value nil)
 
           (tedit--after-save-hook)
 
-          ;; Proof: The engine detected the OS restriction and locked it
+          ;; Proof: The engine detected the file write-protection and locked it
           (expect tedit--native-read-only-p :to-be t)
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be t))))
 
-    (it "drops OS protection when a root file is saved to a writable home directory"
+    (it "drops native hard-lock when a root file is saved to a writable home directory"
       (let ((tedit-hard-lock-major-mode-list '(text-mode)))
         (with-temp-buffer
           (text-mode)
@@ -516,12 +801,13 @@
 
           (tedit--after-save-hook)
 
-          ;; Proof: The engine dropped the OS guard, but kept the base rule ('hard)
+          ;; Proof: The engine dropped the write permission guard, but
+          ;; kept the base rule ('hard)
           (expect tedit--native-read-only-p :to-be nil)
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be t))))
 
-    (it "blur-unlocks dynamically if a root file is saved to home while in the BACKGROUND"
+    (it "unlocks dynamically if a root file is saved to home while in the BACKGROUND"
       (let ((tedit-hard-lock-major-mode-list '(text-mode)))
         (with-temp-buffer
           (text-mode)
@@ -541,10 +827,101 @@
           (tedit--after-save-hook)
 
           ;; Proof: The OS guard was dropped. Because it is in the background
-          ;; and now writable, the engine safely BLUR-UNLOCKS the physical DOM!
+          ;; and now writable, the engine safely unlocks the buffer variable!
           (expect tedit--native-read-only-p :to-be nil)
-          (expect tedit--intended-state :to-be 'hard) ;; The brain still wants it locked...
-          (expect buffer-read-only :to-be nil))))     ;; ...but reality is unlocked for async writes!
+          (expect tedit--intended-state :to-be 'hard) ;; The engine still wants it locked...
+          (expect buffer-read-only :to-be nil))))     ;; ...but buffer state is unlocked for async writes!
+
+    (it "does not corrupt the anchor when saving a remote file whose anchor is nil"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/sudo::/etc/hosts")
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil) ;; File was writable via TRAMP
+          (setq tedit--intended-state 'hard)
+
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+          (spy-on 'file-remote-p :and-return-value t)
+          ;; `file-writable-p' must never be called for a remote file,
+          ;; because it requires a separate TRAMP authentication cycle
+          ;; that can spuriously fail and corrupt the anchor.
+          (spy-on 'file-writable-p)
+
+          ;; The Action: TRAMP successfully saves the remote file.
+          (tedit--after-save-hook)
+
+          ;; Proof: A successful remote save proves the file is writable
+          ;; on the remote host.  The anchor stays nil — it is not
+          ;; corrupted by a separate `file-writable-p' round-trip.
+          (expect tedit--native-read-only-p :to-be nil)
+          (expect 'file-writable-p :not :to-have-been-called))))
+
+    (it "drops the anchor when a file system write-protected file is saved to a remote writable path"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/sudo::/home/user/writable.txt")
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p t) ;; Previously write-protected
+          (setq tedit--intended-state 'hard)
+
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+          (spy-on 'file-remote-p :and-return-value t)
+
+          ;; The Action: User saves the buffer to a TRAMP sudo path.
+          (tedit--after-save-hook)
+
+          ;; Proof: A successful remote save proves the file is writable
+          ;; on the remote host.  The anchor drops from t to nil.
+          (expect tedit--native-read-only-p :to-be nil)
+          (expect tedit--intended-state :to-be 'hard)
+          (expect buffer-read-only :to-be t))))
+    )
+
+  (describe "Engine Safety and Edge Cases"
+    (it "safely handles buffer-name execution in match-rules-p without nil-checks"
+      (with-temp-buffer
+        (rename-buffer "live-buffer")
+        ;; Proof: (buffer-name) of the current buffer is guaranteed to be a string.
+        (expect (buffer-name) :to-equal "live-buffer")
+        (expect (tedit--match-rules-p '("^live") nil nil) :to-be-truthy)))
+
+    (it "idempotently ignores double-execution from overlapping window hooks"
+      (with-temp-buffer
+        (setq tedit--intended-state 'hard)
+        (setq buffer-read-only nil)
+
+        ;; Spy on the native Emacs function to count physical mutations
+        (spy-on 'read-only-mode :and-call-through)
+
+        ;; Simulate C-x 4 b (switch-to-buffer-other-window) which triggers BOTH
+        ;; window-selection-change AND window-buffer-change hooks back-to-back.
+        (tedit--reconcile (current-buffer))
+        (tedit--reconcile (current-buffer))
+
+        ;; Proof: The engine evaluated twice, but physically mutated the buffer exactly ONCE
+        (expect 'read-only-mode :to-have-been-called-times 1)
+        (expect buffer-read-only :to-be t)))
+
+    (it "allows toggling unmanaged buffers if they match the always-allow whitelist"
+      (let ((tedit-hard-lock-major-mode-list nil)
+            (tedit-toggle-inhibit-unmanaged-buffers t)
+            (tedit-toggle-always-allow-mode-list '(fundamental-mode))
+            (tedit-toggle-save-on-toggle nil))
+        (with-temp-buffer
+          (fundamental-mode)
+          (setq tedit--intended-state 'unmanaged)
+          (setq buffer-read-only t)
+
+          ;; The Action: Toggle an unmanaged buffer that is explicitly whitelisted
+          (tedit-save-buffer-toggle)
+
+          ;; Proof: The whitelist bypassed the inhibition block, allowing the toggle to unlock it
+          (expect tedit--intended-state :to-be 'none)
+          (expect buffer-read-only :to-be nil))))
     )
   )
 
