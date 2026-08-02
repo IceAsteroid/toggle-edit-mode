@@ -89,7 +89,54 @@
           (spy-on 'window-buffer :and-return-value (current-buffer))
 
           ;; Proof: The engine respected the user's override setting for rule conflicts.
-          (expect (tedit--compute-effective-state (current-buffer)) :to-be 'soft)))))
+          (expect (tedit--compute-effective-state (current-buffer)) :to-be 'soft))))
+
+    (it "drops the hard lock of a dual lock when the buffer is focused out"
+      (let ((tedit-soft-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          ;; The file is writable (native is nil), but tedit applied a
+          ;; dual lock: buffer-read-only reflects the hard lock, while
+          ;; intended-state records both locks.
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'dual)
+
+          ;; Mock the buffer as running in the background.
+          (spy-on 'selected-window :and-return-value 'other-window)
+          (spy-on 'window-buffer :and-return-value 'other-buffer)
+
+          ;; The Action: the evaluator decides the background state.
+          (let ((result (tedit--compute-effective-state (current-buffer))))
+
+            ;; Proof: Only the hard part (read-only) blocks elisp
+            ;; writes, so the blur drops it and keeps the soft lock.
+            ;; Soft lock never blocks elisp, so the background process
+            ;; can write, while the user still cannot type.
+            (expect result :to-be 'soft)))))
+
+    (it "preserves the user's explicit unlock when the buffer is focused out"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          ;; The user toggled the buffer unlocked via
+          ;; `tedit-save-buffer-toggle', so intended-state is 'none.
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none)
+
+          ;; Mock the buffer as running in the background.
+          (spy-on 'selected-window :and-return-value 'other-window)
+          (spy-on 'window-buffer :and-return-value 'other-buffer)
+
+          ;; The Action: the evaluator decides the background state.
+          (let ((result (tedit--compute-effective-state (current-buffer))))
+
+            ;; Proof: The blur logic must not re-apply a lock to a
+            ;; buffer the user explicitly unlocked.  The 'none state
+            ;; survives the window switch unchanged.
+            (expect result :to-be 'none)))))
+    )
 
 
   (describe "tedit--reconcile (The State Enforcer)"
