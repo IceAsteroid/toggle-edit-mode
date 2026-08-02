@@ -881,6 +881,60 @@
           (expect buffer-read-only :to-be t))))
     )
 
+  (describe "Indirect Buffer (clone-indirect-buffer) Handling"
+
+    (it "inherits intended-state so toggle works on a cloned hard-locked buffer"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode))
+            (tedit-toggle-save-on-toggle nil)
+            (tedit-toggle-inhibit-if-file-initially-hard-locked t))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/tmp/base.txt")
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'hard)
+
+          (let ((clone (clone-indirect-buffer "*clone-test*" nil)))
+            (unwind-protect
+                (with-current-buffer clone
+                  (spy-on 'selected-window :and-return-value 'mock-window)
+                  (spy-on 'window-buffer :and-return-value (current-buffer))
+
+                  ;; The Action: User toggles in the cloned buffer
+                  (tedit-save-buffer-toggle)
+
+                  ;; Proof: The clone inherits intended-state='hard
+                  ;; (non-nil), so Phase 1 init is skipped and
+                  ;; native-read-only-p is never re-captured from the
+                  ;; inherited buffer-read-only=t.  Toggle is not
+                  ;; inhibited.
+                  (expect tedit--native-read-only-p :to-be nil)
+                  (expect tedit--intended-state :to-be 'none)
+                  (expect buffer-read-only :to-be nil))
+              (kill-buffer clone))))))
+
+    (it "does not re-capture native read-only even after always-lock-on-switch reset"
+      (let ((tedit-hard-lock-major-mode-list '(text-mode)))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-file-name "/tmp/base.txt")
+          (setq buffer-read-only t)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'hard)
+
+          (let ((clone (clone-indirect-buffer "*clone-test*" nil)))
+            (unwind-protect
+                (with-current-buffer clone
+                  ;; Simulate always-lock-on-switch wiping the intent
+                  (setq tedit--intended-state nil)
+
+                  ;; Phase 1 init runs, but local-variable-p is t in
+                  ;; the clone, so native-read-only-p is NOT re-captured
+                  ;; from the inherited buffer-read-only=t.
+                  (expect (local-variable-p 'tedit--native-read-only-p) :to-be t)
+                  (expect tedit--native-read-only-p :to-be nil))
+              (kill-buffer clone)))))))
+
   (describe "Engine Safety and Edge Cases"
     (it "safely handles buffer-name execution in match-rules-p without nil-checks"
       (with-temp-buffer
