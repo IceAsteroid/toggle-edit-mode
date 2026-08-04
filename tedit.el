@@ -449,6 +449,20 @@ lock is enforced when file is visited)."
 (defvar tedit--saved-tick nil
   "Tracks the buffer modification tick to prevent redundant hook execution.")
 
+(defvar tedit-toggle-before-save-buffer-hook nil
+  "Hook run when `tedit-save-buffer-toggle' is called on a tedit-managed buffer.
+
+The hook is run only If `tedit-toggle-save-on-toggle' is non-nil, and
+before calling `basic-save-buffer' in the command.
+
+Note that the command will also run hooks that are triggered by
+`basic-save-buffer' if `tedit-toggle-save-on-toggle' is non-nil.
+
+This is useful when you do not want to add stuff in `before-save-hook'
+which is triggered whenever a save happens, but you want to have a
+predictable trigger with `tedit-save-buffer-toggle'.  E.g, an aggressive
+extension like `super-save' triggers saving on variety of User actions.")
+
 (defvar tedit-toggle-inhibit-save-buffer-hook nil
   "Hook run when `tedit-save-buffer-toggle' is called on an ignored buffer.
 
@@ -841,7 +855,10 @@ before the new mode takes over."
     (if (and (buffer-file-name)
              tedit-toggle-save-on-toggle
              (not (tedit--match-rules-p tedit-toggle-inhibit-save-buffer-regexps nil nil)))
-        (basic-save-buffer)
+        (progn
+          (with-demoted-errors "Error in tedit-toggle-before-save-buffer-hook: %s"
+            (run-hooks 'tedit-toggle-before-save-buffer-hook))
+          (basic-save-buffer))
       (let ((current-tick (buffer-chars-modified-tick)))
         (unless (eq tedit--saved-tick current-tick)
           (with-demoted-errors "Error in tedit-toggle-inhibit-save-buffer-hook: %s"
