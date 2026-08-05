@@ -440,6 +440,104 @@
           ;; never fired.
           (expect tedit--intended-state :to-be 'none)
           (expect buffer-read-only :to-be nil))))
+
+    (it "does not relock a managed buffer when returning from a killed relock-inhibited buffer"
+      (let ((tedit-always-lock-on-switch t)
+            (tedit-hard-lock-major-mode-list '(text-mode))
+            (tedit-relock-inhibit-from-buffer-regexps '("\\*Org Select\\*")))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none) ;; User toggled unlocked
+
+          ;; Step 1: focus moves to *Org Select*, which matches the
+          ;; relock-inhibit regexps.  It must NOT be recorded as
+          ;; last-focused, so returning from it is not a real switch.
+          (setq tedit--last-focused-buffer (current-buffer))
+          (let ((org-select (generate-new-buffer "*Org Select*")))
+            (spy-on 'selected-window :and-return-value 'select-window)
+            (spy-on 'window-buffer :and-return-value org-select)
+            (tedit--focus-handler)
+
+            ;; Kill the buffer, simulating `org-mks' cleanup which
+            ;; kills *Org Select* before focus returns.
+            (kill-buffer org-select))
+
+          ;; Step 2: focus returns to the original buffer.
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+          (tedit--focus-handler)
+
+          ;; Proof: The 'none override survives.  The buffer is NOT
+          ;; relocked, even though the outgoing buffer was killed
+          ;; before focus returned.
+          (expect tedit--intended-state :to-be 'none)
+          (expect buffer-read-only :to-be nil))))
+
+    (it "does not relock a managed buffer when returning from a killed relock-inhibited mode"
+      (let ((tedit-always-lock-on-switch t)
+            (tedit-hard-lock-major-mode-list '(text-mode))
+            (tedit-relock-inhibit-from-mode-list '(special-mode)))
+        (with-temp-buffer
+          (text-mode) ;; Managed, but does NOT match the inhibit list
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none) ;; User toggled unlocked
+
+          ;; Step 1: focus moves to a special-mode buffer that matches
+          ;; the relock-inhibit mode list.  It must NOT be recorded as
+          ;; last-focused, so returning from it is not a real switch.
+          (setq tedit--last-focused-buffer (current-buffer))
+          (let ((inhibit-buffer (generate-new-buffer "*inhibit-mode*")))
+            (with-current-buffer inhibit-buffer
+              (special-mode))
+            (spy-on 'selected-window :and-return-value 'select-window)
+            (spy-on 'window-buffer :and-return-value inhibit-buffer)
+            (tedit--focus-handler)
+
+            ;; Kill the buffer before focus returns.
+            (kill-buffer inhibit-buffer))
+
+          ;; Step 2: focus returns to the original buffer.
+          (spy-on 'selected-window :and-return-value 'mock-window)
+          (spy-on 'window-buffer :and-return-value (current-buffer))
+          (tedit--focus-handler)
+
+          ;; Proof: The 'none override survives.  The buffer is NOT
+          ;; relocked, even though the outgoing buffer's mode matched
+          ;; the inhibit list and the buffer was killed before return.
+          (expect tedit--intended-state :to-be 'none)
+          (expect buffer-read-only :to-be nil))))
+
+    (it "still applies locks to a relock-inhibited buffer on entry"
+      (let ((tedit-always-lock-on-switch t)
+            (tedit-hard-lock-major-mode-list '(text-mode))
+            (tedit-relock-inhibit-from-buffer-regexps '("\\*Inhibit Managed\\*")))
+        (with-temp-buffer
+          (text-mode)
+          (setq buffer-read-only nil)
+          (setq tedit--native-read-only-p nil)
+          (setq tedit--intended-state 'none)
+          (setq tedit--last-focused-buffer (current-buffer))
+
+          ;; The inhibited buffer is ALSO hard-lock managed.
+          (let ((inhibit-buffer (generate-new-buffer "*Inhibit Managed*")))
+            (with-current-buffer inhibit-buffer
+              (text-mode)
+              (setq tedit--native-read-only-p nil))
+            (spy-on 'selected-window :and-return-value 'select-window)
+            (spy-on 'window-buffer :and-return-value inhibit-buffer)
+
+            ;; The Action: focus moves to the inhibited, managed buffer.
+            (tedit--focus-handler)
+
+            ;; Proof: always-lock-on-switch still applies.  The buffer
+            ;; was reconciled and hard-locked, even though it will not
+            ;; be recorded as last-focused.
+            (expect (buffer-local-value 'buffer-read-only inhibit-buffer)
+                    :to-be t)
+            (kill-buffer inhibit-buffer)))))
     )
 
 
