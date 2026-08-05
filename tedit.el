@@ -692,26 +692,17 @@ FRAME-OR-WINDOW is an argument received from a hook such as
     ;; GUARD CLAUSES: Do nothing if refactoring, in a recursive minibuffer,
     ;; returning from a side-panel tree view, or mid-mode transition.
     ;;
-    ;; Check the previous buffer for relock-inhibit rules so returning
-    ;; from a side-panel doesn't falsely bypass logic.
-    ;;
-    ;; If the incoming buffer matches an inhibit rule, this block aborts BEFORE
-    ;; `tedit--last-focused-buffer` updates. This creates "Transient Invisibility",
-    ;; perfectly preserving your manual lock states when you close the side-panel.
+    ;; The relock-inhibit rules are NOT part of this guard.  They only
+    ;; gate the `tedit--last-focused-buffer' update at the end of this
+    ;; function, so an inhibited buffer is still reconciled and locked
+    ;; when entered (per `always-lock-on-switch'), but is deliberately
+    ;; never recorded as last-focused.  Returning from it then produces
+    ;; `switched-p' = nil, preserving the target buffer's lock state.
     (unless (or (bound-and-true-p delay-mode-hooks)
                 (memq this-command tedit-inhibit-commands)
                 (minibufferp buf)
                 (and tedit-relock-inhibit-from-deep-minibuffer (> (minibuffer-depth) 0))
-                (and last-win tedit-relock-inhibit-from-dedicated-window (window-dedicated-p last-win))
-
-                ;; FIX: Ensure the outgoing buffer hasn't been killed by the user
-                ;; before attempting to check its regex rules.
-                (and last-buf
-                     (buffer-live-p last-buf)
-                     (with-current-buffer last-buf
-                       (tedit--match-rules-p tedit-relock-inhibit-from-buffer-regexps
-                                             nil
-                                             tedit-relock-inhibit-from-mode-list))))
+                (and last-win tedit-relock-inhibit-from-dedicated-window (window-dedicated-p last-win)))
 
       ;; If `tedit-always-lock-on-switch' is true, clear the saved
       ;; state whenever the user switches to refocus a buffer. This
@@ -739,7 +730,20 @@ FRAME-OR-WINDOW is an argument received from a hook such as
       ;; Reconcile Incoming Buffer (Restores locks for the buffer we just entered)
       (tedit--reconcile buf)
 
-      (setq tedit--last-focused-buffer buf))))
+      ;; Record the incoming buffer as last-focused UNLESS it matches a
+      ;; relock-inhibit rule.  The inhibited buffer is still reconciled
+      ;; and locked above (per always-lock-on-switch), but deliberately
+      ;; never recorded: returning from it produces switched-p = nil, so
+      ;; the target buffer's lock state is preserved.
+      ;;
+      ;; We check `buf' (the incoming buffer), which is always alive,
+      ;; rather than the outgoing buffer, which may have been killed
+      ;; before focus returned (e.g. `org-mks' kills `*Org Select*').
+      (unless (with-current-buffer buf
+                (tedit--match-rules-p tedit-relock-inhibit-from-buffer-regexps
+                                      nil
+                                      tedit-relock-inhibit-from-mode-list))
+        (setq tedit--last-focused-buffer buf)))))
 
 (defun tedit--before-major-mode-change ()
   "Tear down auto-computed intent before a major mode change.
