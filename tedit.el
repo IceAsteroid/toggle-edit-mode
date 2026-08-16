@@ -748,8 +748,18 @@ FRAME-OR-WINDOW is an argument received from a hook such as
 (defun tedit--before-major-mode-change ()
   "Tear down auto-computed intent before a major mode change.
 This cleans up transient locks (e.g. fundamental-mode during startup)
-before the new mode takes over."
-  (when tedit-mode
+before the new mode takes over.
+
+Guard to not run during the buffer revert action such as triggered by
+`revert-buffer'."
+  ;; Guard to not run during a `revert-buffer'.  The revert re-runs the
+  ;; major mode, which triggers this function by `change-major-mode-hook',
+  ;; but `tedit--after-revert-hook' re-evaluates the buffer afterwards.
+  ;; The `should-clear-physical' unlock here would change
+  ;; `buffer-read-only' before it is cached into
+  ;; `tedit--native-read-only-p'.
+  (when (and tedit-mode
+             (not (bound-and-true-p revert-buffer-in-progress-p)))
     (let* ((base-soft (tedit--should-enable-soft-lock-p))
            (base-hard (tedit--should-enable-hard-lock-p))
            (base-rule (cond (base-soft 'soft) (base-hard 'hard) (t 'unmanaged)))
@@ -781,8 +791,19 @@ before the new mode takes over."
         (read-only-mode -1)))))
 
 (defun tedit--after-major-mode-change ()
-  "Re-evaluate the buffer AFTER the new major mode has initialized."
-  (when (and tedit-mode tedit-apply-locks-on-mode-change)
+  "Re-evaluate the buffer AFTER the new major mode has initialized.
+
+Run when `tedit-apply-locks-on-mode-change' is non-nil.
+
+Guard to not run during the buffer revert action such as triggered by
+`revert-buffer'."
+  ;; Guard to not run during a `revert-buffer', applying locks here
+  ;; would clobber the native `buffer-read-only' that `after-find-file'
+  ;; just computed, corrupting the `tedit--native-read-only-p' anchor
+  ;; captured by `tedit--after-revert-hook'.
+  (when (and tedit-mode
+             tedit-apply-locks-on-mode-change
+             (not (bound-and-true-p revert-buffer-in-progress-p)))
     (tedit--reconcile (current-buffer))))
 
 (defun tedit--setup-company-integration ()
@@ -959,22 +980,36 @@ cases that some elisp code needs to write to these buffers."
 (defun tedit--after-fundamental-mode-advice (&rest _)
   "Ensure tedit evaluates fundamental-mode, unless it's a parent mode transition."
   (unless (bound-and-true-p delay-mode-hooks)
+    ;; Same revert guard as the major-mode-change hooks.  A revert's
+    ;; `normal-mode' may call `fundamental-mode' via `set-auto-mode'.
     (when (and tedit-mode
                tedit-apply-locks-on-mode-change
+               (not (bound-and-true-p revert-buffer-in-progress-p))
                (eq (current-buffer) (window-buffer (selected-window))))
       (tedit--reconcile (current-buffer)))))
 
 (defun tedit--after-revert-hook ()
   "Recalculate native read-only lock and intent after a buffer revert.
 
-According to the initial read-only state managed by Emacs revert
-handling, re-cache the state to `tedit--native-read-only-p'.  Instead of
-re-caching directly according to the write permission in the file
-system.
+The `revert-buffer' command reloads the file from the file system and
+reloads major mode initialization if the command is run with its
+PRESERVE-MODES argument as nil by default. since its write permission
+may have changed since the buffer was opened, the `buffer-read-only'
+state may also be changed by the command.
 
-Because `revert-buffer' is a destructive action that wipes buffer state
-and reloads from the file system, this forces the engine to forget past
-user overrides and capture the fresh file state.
+Instead of re-caching directly with `file-write-p' according to the
+write permission in the file system, let Emacs revert feature handle
+`buffer-read-only' natively.  As the file write permission does not
+indicate Emacs has no permission to write to or not.  E.g. Emacs can
+gain write access with tramp for a root file, even though the write
+permission indicates the user is prohibited to write.
+
+This function re-caches the fresh native read-only state to the
+`tedit--native-read-only-p' anchor variable.
+
+This function also discard past manual overrides by setting
+`tedit--intended-state' to nil, then re-evaluates the buffer to the
+rules.
 
 NOTE:
 
@@ -982,8 +1017,16 @@ NOTE:
 
 2. This will not be triggered for a buffer that uses a custom function
 set in `revert-buffer-function'."
+  ;; This function triggered by `after-revert-hook' and runs after
+  ;; `after-find-file' called by `revert-buffer'.  `after-find-file'
+  ;; sets `buffer-read-only' according to the file write permission.
+  ;; Re-capture that into the `tedit--native-read-only-p' anchor, then
+  ;; clear `tedit--intended-state' deliberately, since tedit's state
+  ;; is `permanent-local', so it survives the revert's major mode
+  ;; re-initialization and would otherwise keep past overrides.
+  ;;
   ;; Though normally `after-revert-hook' will not be triggered by a
-  ;; non-visiting buffer. we still add `buffer-file-name' as a guard.
+  ;; non-visiting buffer, we still add `buffer-file-name' as a guard.
   (when (and tedit-mode
              buffer-file-name)
     (setq tedit--native-read-only-p buffer-read-only)
