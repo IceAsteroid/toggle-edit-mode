@@ -899,6 +899,83 @@
           (expect tedit--native-read-only-p :to-be nil)
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be nil))))
+
+    (it "keeps the native write-protection anchor intact when reverting a hard-locked writable file"
+      ;; REGRESSION TEST: runs a REAL `revert-buffer' (the direct-hook tests
+      ;; above call `tedit--after-revert-hook' in isolation and therefore never
+      ;; trigger the bug).  In Emacs 30, an interactive `revert-buffer' passes
+      ;; preserve-modes=nil, so `after-find-file' re-runs `normal-mode'.  That
+      ;; re-fires tedit's `after-change-major-mode-hook' reconcile, which used
+      ;; to re-lock the buffer BEFORE this hook captured `buffer-read-only',
+      ;; corrupting `tedit--native-read-only-p' to t for a writable file and
+      ;; permanently inhibiting the toggle.
+      (let ((tedit-hard-lock-major-mode-list '(emacs-lisp-mode))
+            (tedit-toggle-inhibit-if-file-initially-hard-locked t)
+            (tedit-toggle-save-on-toggle nil)
+            (f (make-temp-file "tedit-revert-test-" nil ".el" "(message \"hi\")")))
+        (unwind-protect
+            (let ((buf (find-file-noselect f)))
+              (unwind-protect
+                  (with-current-buffer buf
+                    ;; Focus the buffer in the real selected window (batch
+                    ;; mode has one), then simulate the focus-in event, since
+                    ;; window-selection hooks do not fire in batch mode.
+                    (switch-to-buffer buf)
+                    (tedit--focus-handler)
+
+                    ;; Sanity: the managed buffer is hard-locked and the
+                    ;; anchor correctly knows the file is writable.
+                    (expect buffer-read-only :to-be t)
+                    (expect tedit--native-read-only-p :to-be nil)
+
+                    ;; The Action: interactive-style revert
+                    (revert-buffer nil t)
+
+                    ;; Proof: the anchor must reflect the file system (writable
+                    ;; => nil), NOT tedit's own just-re-applied lock.
+                    (expect tedit--native-read-only-p :to-be nil)
+
+                    ;; And the toggle must not be inhibited by a phantom
+                    ;; natively-read-only state.
+                    (tedit-save-buffer-toggle)
+                    (expect tedit--intended-state :to-be 'none)
+                    (expect buffer-read-only :to-be nil))
+                (kill-buffer buf)))
+          (delete-file f))))
+
+    (it "inhibits the toggle after reverting a hard-locked buffer whose file became write-protected"
+      (let ((tedit-hard-lock-major-mode-list '(emacs-lisp-mode))
+            (tedit-clear-hard-lock-before-mode-change t)
+            (tedit-toggle-inhibit-if-file-initially-hard-locked t)
+            (tedit-toggle-save-on-toggle nil)
+            (f (make-temp-file "tedit-revert-ro-" nil ".el" "(message \"hi\")")))
+        (unwind-protect
+            (let ((buf (find-file-noselect f)))
+              (unwind-protect
+                  (with-current-buffer buf
+                    (switch-to-buffer buf)
+                    (tedit--focus-handler)
+
+                    ;; Opened writable and hard-locked.
+                    (expect buffer-read-only :to-be t)
+
+                    ;; The file becomes write-protected after being opened.
+                    (set-file-modes f #o444)
+
+                    ;; The Action: interactive-style revert picks up the new
+                    ;; permission.
+                    (revert-buffer nil t)
+
+                    ;; The buffer stays hard-locked after the revert.
+                    (expect buffer-read-only :to-be t)
+
+                    ;; The toggle is now inhibited, since the file is
+                    ;; write-protected, so it must not unlock.
+                    (tedit-save-buffer-toggle)
+                    (expect tedit--intended-state :to-be 'hard)
+                    (expect buffer-read-only :to-be t))
+                (kill-buffer buf)))
+          (delete-file f))))
   )
 
   (describe "Save As (C-x C-w) / after-save-hook Integration"
