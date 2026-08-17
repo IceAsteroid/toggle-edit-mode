@@ -770,12 +770,19 @@ Guard to not run during the buffer revert action such as triggered by
                                        buffer-read-only
                                        (not tedit--native-read-only-p)
                                        (memq tedit--intended-state '(hard dual)))))
-
-      ;; QUIRK: If the user manually toggled the lock (intent != base-rule),
-      ;; we usually PRESERVE their intent across the mode change.
-      ;; We only clear the cache if the state was auto-computed by tedit,
-      ;; OR if the user explicitly demanded locks be stripped via configuration.
-      (when (or (eq tedit--intended-state base-rule)
+      ;; QUIRK: A major mode change is treated as a fresh buffer
+      ;; initialization for the lock state. When
+      ;; `tedit-apply-locks-on-mode-change' is non-nil, clear ANY saved
+      ;; intent, whether auto-computed or a manual 'none from
+      ;; `tedit-save-buffer-toggle', so `tedit--after-major-mode-change'
+      ;; re-evaluates and applies the rules for the new mode.
+      ;;
+      ;; When `tedit-apply-locks-on-mode-change' is nil, only
+      ;; auto-computed states (intent equals base-rule) are flagged
+      ;; for deferred re-evaluation on the next focus switch; manual
+      ;; overrides persist.
+      (when (or tedit-apply-locks-on-mode-change
+                (eq tedit--intended-state base-rule)
                 should-clear-physical)
         (if tedit-apply-locks-on-mode-change
             (setq tedit--intended-state nil)
