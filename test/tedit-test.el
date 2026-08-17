@@ -235,7 +235,7 @@
             ;; so the new mode triggers fresh evaluation.
             (expect tedit--intended-state :to-be nil))))
 
-      (it "preserves a manual override across a mode change"
+      (it "clears a manual unlock override so the new mode can re-apply its rules"
         (let ((tedit-clear-hard-lock-before-mode-change nil)
               (tedit-apply-locks-on-mode-change t)
               (tedit-hard-lock-major-mode-list '(text-mode)))
@@ -243,16 +243,19 @@
             (text-mode)
             (setq buffer-read-only nil)
             (setq tedit--native-read-only-p nil)
-            (setq tedit--intended-state 'none)  ;; manual override, ≠ base-rule 'hard
+            (setq tedit--intended-state 'none)  ;; manual unlock override
 
             ;; The Action: major mode is about to change.
             (tedit--before-major-mode-change)
 
-            ;; Proof: Manual override is preserved.  The condition
-            ;; (eq intended-state base-rule) is nil, so the cache
-            ;; is left intact — the user's explicit unlock survives
-            ;; the mode transition.
-            (expect tedit--intended-state :to-be 'none))))
+            ;; Proof: A mode change is a fresh context.  When
+            ;; `tedit-apply-locks-on-mode-change' is non-nil, even a
+            ;; manual 'none override is cleared so
+            ;; `tedit--after-major-mode-change' re-derives the lock
+            ;; state from the NEW mode's rules.  Otherwise the stale
+            ;; 'none would survive and the new managed mode would
+            ;; never be locked (regression reported by the author).
+            (expect tedit--intended-state :to-be nil))))
       )
 
     (it "re-evaluates the buffer based on new major mode rules after a mode change"
@@ -279,6 +282,48 @@
           ;; so the engine applies a hard lock.
           (expect tedit--intended-state :to-be 'hard)
           (expect buffer-read-only :to-be t))))
+
+    (it "relocks a manually unlocked buffer when its major mode changes"
+      ;; REGRESSION TEST: runs a REAL mode change (the direct-hook tests
+      ;; above call `tedit--before/after-major-mode-change' in isolation
+      ;; with mocked focus).  Reported by the author: a buffer that tedit
+      ;; hard-locked, then the user manually unlocked with
+      ;; `tedit-save-buffer-toggle' ('none), failed to relock when the
+      ;; major mode changed between two managed modes, because the stale
+      ;; 'none intent survived `tedit--before-major-mode-change'.
+      (let ((tedit-hard-lock-derived-mode-list '(prog-mode text-mode))
+            (tedit-clear-hard-lock-before-mode-change t)
+            (tedit-apply-locks-on-mode-change t)
+            (tedit-toggle-save-on-toggle nil)
+            (f (make-temp-file "tedit-modechange-" nil ".el" "(message \"hi\")\n")))
+        (unwind-protect
+            (let ((buf (find-file-noselect f)))
+              (unwind-protect
+                  (with-current-buffer buf
+                    (switch-to-buffer buf)
+                    (tedit--focus-handler)
+
+                    ;; Sanity: managed via prog-mode, hard-locked by tedit.
+                    (expect major-mode :to-be 'emacs-lisp-mode)
+                    (expect buffer-read-only :to-be t)
+                    (expect tedit--intended-state :to-be 'hard)
+
+                    ;; User manually unlocks with tedit-save-buffer-toggle.
+                    (tedit-save-buffer-toggle)
+                    (expect buffer-read-only :to-be nil)
+                    (expect tedit--intended-state :to-be 'none)
+
+                    ;; Mode change to another managed mode must relock.
+                    (text-mode)
+                    (expect buffer-read-only :to-be t)
+                    (expect tedit--intended-state :to-be 'hard)
+
+                    ;; And back.
+                    (emacs-lisp-mode)
+                    (expect buffer-read-only :to-be t)
+                    (expect tedit--intended-state :to-be 'hard))
+                (kill-buffer buf)))
+          (delete-file f))))
     )
 
 
